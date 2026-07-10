@@ -25,6 +25,8 @@ async function run() {
     // ডাটাবেজ এবং কালেকশন নাম (মাদরাসা ডাটাবেজ)
     const database = client.db("aimhabiganj");
     const admissionCollection = database.collection("admissions");
+    const galleryCollection = database.collection("gallery");
+
 
     // 📩 ভর্তি ফরম সাবমিট করার POST API
     app.post('/api/admissions', async (req, res) => {
@@ -51,6 +53,34 @@ async function run() {
     // টেস্ট রুট
     app.get('/', (req, res) => {
         res.send('As-Salam Madrasah Server is Running!');
+    });
+
+    // ১. নতুন গ্যালারি আইটেম (ফটো বা ভিডিও) যোগ করার POST API
+    app.post('/api/gallery', async (req, res) => {
+        try {
+            const newItem = req.body; // { type: 'photo'/'video', title, url, tag, length, platform }
+            newItem.createdAt = new Date();
+
+            const result = await galleryCollection.insertOne(newItem);
+            res.status(201).json({ success: true, message: "আইটেমটি গ্যালারিতে সফলভাবে যোগ করা হয়েছে!", insertedId: result.insertedId });
+        } catch (error) {
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+        }
+    });
+
+    // ২. পাবলিক পেজের জন্য সব গ্যালারি ডাটা নিয়ে আসার GET API
+    app.get('/api/gallery', async (req, res) => {
+        try {
+            const items = await galleryCollection.find({}).sort({ createdAt: -1 }).toArray();
+            
+            // পাবলিক পেজের ফরম্যাট অনুযায়ী আলাদা অবজেক্ট তৈরি
+            const photos = items.filter(item => item.type === 'photo');
+            const videos = items.filter(item => item.type === 'video');
+
+            res.json({ success: true, photos, videos });
+        } catch (error) {
+            res.status(500).json({ success: false, message: "ডাটা আনা সম্ভব হয়নি।" });
+        }
     });
 
     console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
