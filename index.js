@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion } = require('mongodb');
+const { ObjectId } = require('mongodb');
 require('dotenv').config();
 
 const app = express();
@@ -82,6 +83,23 @@ async function run() {
             res.status(500).json({ success: false, message: "ডাটা আনা সম্ভব হয়নি।" });
         }
     });
+
+// 🗑️ গ্যালারির আইটেম মুছে ফেলার DELETE API
+app.delete('/api/gallery/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const query = { _identity: new ObjectId(id) }; // অথবা _id ব্যবহার করুন আপনার ডাটাবেজ অনুযায়ী
+        const result = await galleryCollection.deleteOne({ _id: new ObjectId(id) });
+        
+        if (result.deletedCount === 1) {
+            res.json({ success: true, message: "মিডিয়াটি সফলভাবে মুছে ফেলা হয়েছে।" });
+        } else {
+            res.status(404).json({ success: false, message: "আইটেমটি খুঁজে পাওয়া যায়নি।" });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+    }
+});
 
     console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
   } catch (error) {
