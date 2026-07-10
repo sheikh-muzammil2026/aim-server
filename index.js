@@ -50,6 +50,64 @@ async function run() {
             res.status(500).json({ success: false, message: "সার্ভারে কোনো সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
         }
     });
+    // ১. সমস্ত ভর্তি আবেদনপত্র ডাটাবেজ থেকে নিয়ে আসার GET API
+app.get('/api/admissions', async (req, res) => {
+    try {
+        const applications = await admissionCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.json({ success: true, data: applications });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "আবেদনপত্র নিয়ে আসতে সমস্যা হয়েছে।" });
+    }
+});
+
+// ২. আবেদনের স্ট্যাটাস (Approved / Rejected) পরিবর্তন করার PATCH API
+app.patch('/api/admissions/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { status } = req.body; // Approved অথবা Rejected
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { status: status } };
+
+        const result = await admissionCollection.updateOne(filter, updateDoc);
+        if (result.modifiedCount === 1) {
+            res.json({ success: true, message: `আবেদনটি সফলভাবে ${status === 'Approved' ? 'অনুমোদন' : 'বাতিল'} করা হয়েছে।` });
+        } else {
+            res.status(404).json({ success: false, message: "আবেদনটি পাওয়া যায়নি।" });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+    }
+});
+
+// ৩. পাবলিক ভর্তি নির্দেশিকা গাইডলাইন ডাটা সেভ করার PUT API
+app.put('/api/admission-settings', async (req, res) => {
+    try {
+        const settingsData = req.body;
+        const settingsCollection = client.db("aimhabiganj").collection("settings");
+        
+        // সর্বদা ১টি ডকুমেন্টেই সেটিংস ওভাররাইট (Upsert) হবে
+        const result = await settingsCollection.updateOne(
+            { type: "admission_guideline" },
+            { $set: { type: "admission_guideline", ...settingsData, updatedAt: new Date() } },
+            { upsert: true }
+        );
+
+        res.json({ success: true, message: "ভর্তি নির্দেশিকা সফলভাবে আপডেট হয়েছে!" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "সেটিংস আপডেট করা যায়নি।" });
+    }
+});
+
+// ৪. পাবলিক পেজে দেখানোর জন্য গাইডলাইন ডাটা নিয়ে আসার GET API
+app.get('/api/admission-settings', async (req, res) => {
+    try {
+        const settingsCollection = client.db("aimhabiganj").collection("settings");
+        const settings = await settingsCollection.findOne({ type: "admission_guideline" });
+        res.json({ success: true, data: settings || {} });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "ডাটা লোড করা সম্ভব হয়নি।" });
+    }
+});
 
     // টেস্ট রুট
     app.get('/', (req, res) => {
