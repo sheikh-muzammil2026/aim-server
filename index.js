@@ -106,6 +106,67 @@ async function run() {
     });
 
     // ==========================================
+    // ১. নির্দিষ্ট আইডির শিক্ষার্থীর তথ্য খোঁজার GET API
+    // ==========================================
+    app.get('/api/admissions/edit/:id', async (req, res) => {
+        try {
+            const id = req.params.id;
+            
+            // ObjectId ভ্যালিড কিনা তা চেক করার জন্য
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).json({ success: false, message: "অকার্যকর আইডি ফর্ম্যাট।" });
+            }
+
+            const query = { _id: new ObjectId(id) };
+            const student = await admissionCollection.findOne(query);
+
+            if (student) {
+                res.json({ success: true, data: student });
+            } else {
+                res.status(404).json({ success: false, message: "শিক্ষার্থীর কোনো তথ্য পাওয়া যায়নি।" });
+            }
+        } catch (error) {
+            console.error("GET Error:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+        }
+    });
+
+    // ==========================================
+    // ২. শিক্ষার্থীর সম্পূর্ণ তথ্য পরিবর্তন/আপডেট করার PUT API
+    // ==========================================
+    app.put('/api/admissions/edit/:id', async (req, res) => {
+        try {
+            const id = req.params.id;
+
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).json({ success: false, message: "অকার্যকর আইডি ফর্ম্যাট।" });
+            }
+
+            const filter = { _id: new ObjectId(id) };
+            
+            // ক্লায়েন্ট থেকে পাঠানো বডি থেকে মঙ্গোডিবির নিজস্ব সিস্টেম জেনারেটেড ফিল্ডগুলো আলাদা করে নেওয়া হচ্ছে
+            // যাতে ডাটাবেজে কোনো প্রকার কনফ্লিক্ট বা এরর না আসে।
+            const { _id, createdAt, updatedAt, ...updateData } = req.body;
+
+            const updateDoc = {
+                $set: updateData
+            };
+
+            const result = await admissionCollection.updateOne(filter, updateDoc);
+
+            // matchedCount > 0 হলে বুঝতে হবে ডাটা পাওয়া গেছে (ডাটা মডিফাই হোক বা আগের মতই থাকুক)
+            if (result.matchedCount > 0) {
+                res.json({ success: true, message: "শিক্ষার্থীর প্রোফাইল সফলভাবে আপডেট করা হয়েছে।" });
+            } else {
+                res.status(404).json({ success: false, message: "শিক্ষার্থীর তথ্য পাওয়া যায়নি।" });
+            }
+        } catch (error) {
+            console.error("PUT Error:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+        }
+    });
+
+    // ==========================================
     // ৩. পাবলিক ভর্তি নির্দেশিকা গাইডলাইন ডাটা সেভ করার PUT API
     // ==========================================
     app.put('/api/admission-settings', async (req, res) => {
