@@ -28,6 +28,100 @@ async function run() {
     const admissionCollection = database.collection("admissions");
     const galleryCollection = database.collection("gallery");
     const settingsCollection = database.collection("settings");
+    const fundsCollection = database.collection("finance_funds");
+    const feeStructuresCollection = database.collection("fee_structures");
+
+    // ==========================================
+    // ১. নতুন ফান্ড বা আর্থিক অ্যাকাউন্ট তৈরি (POST API)
+    // ==========================================
+    app.post('/api/finance/funds', async (req, res) => {
+        try {
+            const { name, code, description, initBalance } = req.body;
+
+            if (!name || !code) {
+                return res.status(400).json({ success: false, message: "ফান্ডের নাম এবং কোড দেওয়া আবশ্যক।" });
+            }
+
+            // ডুপ্লিকেট ফান্ড কোড চেক
+            const existingFund = await fundsCollection.findOne({ code: code.toUpperCase() });
+            if (existingFund) {
+                return res.status(400).json({ success: false, message: "এই কোড দিয়ে অলরেডি ফান্ড তৈরি করা আছে।" });
+            }
+
+            const newFund = {
+                name,                               // যেমন: জেনারেল ব্যাংক হিসাব-১৫
+                code: code.toUpperCase(),           // যেমন: GENERAL_BANK
+                description: description || "",     // খাতের অতিরিক্ত বিবরণ
+                currentBalance: parseFloat(initBalance) || 0, // শুরুর ব্যাংকে স্থিতি/নগদ স্থিতি
+                createdAt: new Date()
+            };
+
+            const result = await fundsCollection.insertOne(newFund);
+            res.status(201).json({ 
+                success: true, 
+                message: "নতুন আর্থিক খাত/তহবিল সফলভাবে সংরক্ষিত হয়েছে!", 
+                insertedId: result.insertedId 
+            });
+        } catch (error) {
+            console.error("ফান্ড সেভ করতে সমস্যা হয়েছে:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
+        }
+    });
+
+    // ==========================================
+    // ২. ক্লাসভিত্তিক ফি স্ট্রাকচার কনফিগার (POST API - Upsert)
+    // ==========================================
+    app.post('/api/finance/fee-setup', async (req, res) => {
+        try {
+            const { className, feeType, amount, fundCode } = req.body;
+
+            if (!className || !feeType || !amount || !fundCode) {
+                return res.status(400).json({ success: false, message: "সবগুলো ফিল্ড পূরণ করা বাধ্যতামূলক।" });
+            }
+
+            const feeData = {
+                className: className.toLowerCase(), // যেমন: play, nursery, hifz
+                feeType: feeType.toLowerCase(),     // যেমন: admission_fee, tuition_fee, exam_fee
+                amount: parseFloat(amount),         // টাকার পরিমাণ
+                fundCode: fundCode.toUpperCase(),   // এই আয়ের টাকা কোন ফান্ডে ঢুকবে
+                updatedAt: new Date()
+            };
+
+            // একই ক্লাসের একই ফি আগে থাকলে আপডেট হবে, না থাকলে নতুন তৈরি হবে (Upsert)
+            const result = await feeStructuresCollection.updateOne(
+                { className: feeData.className, feeType: feeData.feeType },
+                { $set: feeData },
+                { upsert: true }
+            );
+
+            res.status(200).json({ 
+                success: true, 
+                message: "ফি স্ট্রাকচার সফলভাবে সেটআপ/আপডেট হয়েছে!" 
+            });
+        } catch (error) {
+            console.error("ফি সেটআপ করতে সমস্যা হয়েছে:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
+        }
+    });
+
+    // ==========================================
+    // ৩. সকল ফান্ড এবং ফি সেটিংস ডাটা একসাথে পাওয়ার GET API
+    // ==========================================
+    app.get('/api/finance/settings', async (req, res) => {
+        try {
+            const funds = await fundsCollection.find({}).toArray();
+            const feeStructures = await feeStructuresCollection.find({}).toArray();
+
+            res.status(200).json({ 
+                success: true, 
+                funds, 
+                feeStructures 
+            });
+        } catch (error) {
+            console.error("ডাটা রিড করতে সমস্যা হয়েছে:", error);
+            res.status(500).json({ success: false, message: "সার্ভার থেকে ডাটা আনা যায়নি।" });
+        }
+    });
 
     // ==========================================
     // 📩 ভর্তি ফরম সাবমিট করার POST API
