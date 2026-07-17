@@ -30,6 +30,7 @@ async function run() {
     const settingsCollection = database.collection("settings");
     const fundsCollection = database.collection("finance_funds");
     const feeStructuresCollection = database.collection("fee_structures");
+    const receiptsCollection = database.collection("finance_receipts");
 
     // ==========================================
     // ১. নতুন ফান্ড বা আর্থিক অ্যাকাউন্ট তৈরি (POST API)
@@ -122,6 +123,97 @@ async function run() {
             res.status(500).json({ success: false, message: "সার্ভার থেকে ডাটা আনা যায়নি।" });
         }
     });
+
+        // ==========================================
+    // 🧾 ফি কালেকশনের জন্য নতুন কালেকশন
+    // ==========================================
+    
+
+    // ==========================================
+    // ১. স্টুডেন্ট আইডি দিয়ে তার ফি'র তথ্য খোঁজা (GET API)
+    // ==========================================
+    app.get('/api/finance/student-fees/:studentId', async (req, res) => {
+        try {
+            const { studentId } = req.params;
+
+            // ১. শিক্ষার্থীর তথ্য খোঁজা (আপনার admissions কালেকশন থেকে)
+            const student = await admissionCollection.findOne({ 
+                $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] 
+            });
+
+            if (!student) {
+                return res.status(404).json({ success: false, message: "এই আইডি দিয়ে কোনো শিক্ষার্থী পাওয়া যায়নি।" });
+            }
+
+            // ২. শিক্ষার্থীর ক্লাসের উপর ভিত্তি করে সব ফি স্ট্রাকচার খুঁজে বের করা
+            const studentClass = student.class || student.className; // আপনার ভর্তির ফর্মে যেভাবে সেভ করা আছে
+            const fees = await feeStructuresCollection.find({ className: studentClass.toLowerCase() }).toArray();
+
+            res.status(200).json({
+                success: true,
+                student: {
+                    id: student._id,
+                    name: student.name || student.studentName,
+                    class: studentClass,
+                    roll: student.roll || "N/A"
+                },
+                fees
+            });
+        } catch (error) {
+            console.error("শিক্ষার্থীর ফি খুঁজতে সমস্যা হয়েছে:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+        }
+    });
+
+    // ==========================================
+    // ২. ফি গ্রহণ এবং রসিদ জেনারেট করা (POST API)
+    // ==========================================
+    app.post('/api/finance/collect-fee', async (req, res) => {
+        try {
+            const { studentId, studentName, className, feeType, amount, fundCode, paymentMethod } = req.body;
+
+            if (!studentId || !feeType || !amount || !fundCode) {
+                return res.status(400).json({ success: false, message: "প্রয়োজনীয় সকল তথ্য দেওয়া হয়নি।" });
+            }
+
+            const parsedAmount = parseFloat(amount);
+
+            // ১. একটি ইউনিক রসিদ নম্বর তৈরি (যেমন: R-171856983)
+            const receiptNo = "R-" + Date.now().toString().slice(-9);
+
+            const newReceipt = {
+                receiptNo,
+                studentId,
+                studentName,
+                className,
+                feeType,
+                amount: parsedAmount,
+                fundCode,
+                paymentMethod: paymentMethod || "Cash",
+                collectedAt: new Date()
+            };
+
+            // ২. রসিদ সেভ করা
+            const receiptResult = await receiptsCollection.insertOne(newReceipt);
+
+            // ৩. সংশ্লিষ্ট ফান্ডের ব্যালেন্স (currentBalance) বাড়িয়ে দেওয়া (ACID Transaction এর বিকল্প হিসেবে নিরাপদ আপডেট)
+            await fundsCollection.updateOne(
+                { code: fundCode.toUpperCase() },
+                { $inc: { currentBalance: parsedAmount } }
+            );
+
+            res.status(201).json({
+                success: true,
+                message: "ফি সফলভাবে গ্রহণ করা হয়েছে এবং ফান্ড আপডেট হয়েছে।",
+                receiptNo,
+                insertedId: receiptResult.insertedId
+            });
+        } catch (error) {
+            console.error("ফি কালেকশনে সমস্যা হয়েছে:", error);
+            res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
+        }
+    });
+
 
     // ==========================================
     // 📩 ভর্তি ফরম সাবমিট করার POST API
