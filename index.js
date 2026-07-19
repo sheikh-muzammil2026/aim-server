@@ -26,6 +26,7 @@ async function run() {
     // ডাটাবেজ এবং কালেকশন নাম (মাদরাসা ডাটাবেজ)
     const database = client.db("aimhabiganj");
     const admissionCollection = database.collection("admissions");
+    const countersCollection = database.collection("counters");
     const galleryCollection = database.collection("gallery");
     const settingsCollection = database.collection("settings");
     const fundsCollection = database.collection("finance_funds");
@@ -214,28 +215,46 @@ async function run() {
         }
     });
 
+// ==========================================
+// 📩 ভর্তি ফরম সাবমিট করার POST API
+// ==========================================
+app.post('/api/admissions', async (req, res) => {
+    try {
+        const newApplication = req.body;
 
-    // ==========================================
-    // 📩 ভর্তি ফরম সাবমিট করার POST API
-    // ==========================================
-    app.post('/api/admissions', async (req, res) => {
-        try {
-            const newApplication = req.body;
-            newApplication.status = "Pending"; 
-            newApplication.createdAt = new Date();
+        // মঙ্গোডিবির অ্যাটমিক অপারেশনের মাধ্যমে আইডি ১ বাড়িয়ে নেওয়া হচ্ছে
+        // যদি counters কালেকশনে 'studentId' না থাকে, upsert: true সেটা তৈরি করে নেবে
+        const counterResult = await countersCollection.findOneAndUpdate(
+            { _id: "studentId" },
+            { $inc: { sequence_value: 1 } },
+            { returnDocument: "after", upsert: true }
+        );
 
-            const result = await admissionCollection.insertOne(newApplication);
-            
-            res.status(201).json({
-                success: true,
-                message: "ভর্তি ফরমটি সফলভাবে ডাটাবেজে সংরক্ষিত হয়েছে!",
-                insertedId: result.insertedId
-            });
-        } catch (error) {
-            console.error("ডাটা সেভ করতে সমস্যা হয়েছে:", error);
-            res.status(500).json({ success: false, message: "সার্ভারে কোনো সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
-        }
-    });
+        // কারেন্ট সিকোয়েন্স নাম্বার নেওয়া হচ্ছে
+        const nextIdNumber = counterResult.sequence_value;
+
+        // আপনার রিকোয়ারমেন্ট: ১ থেকে ৯ পর্যন্ত সংখ্যার আগে '0' বসানো (যেমন: 01, 02...)
+        // padStart(2, '0') দিয়ে খুব সহজেই এটি করা যায়। ১০ বা তার বেশি হলে এটি অটোমেটিক ১১, ১২ হয়ে যাবে।
+        const formattedStudentId = String(nextIdNumber).padStart(2, '0');
+
+        // স্টুডেন্ট অবজেক্টে আইডি সেট করা হচ্ছে
+        newApplication.studentId = formattedStudentId;
+        newApplication.status = "Pending"; 
+        newApplication.createdAt = new Date();
+
+        const result = await admissionCollection.insertOne(newApplication);
+        
+        res.status(201).json({
+            success: true,
+            message: "ভর্তি ফরমটি সফলভাবে ডাটাবেজে সংরক্ষিত হয়েছে!",
+            studentId: formattedStudentId, // রেসপন্সে আইডিটি ফেরত পাঠানো হচ্ছে যাতে নেক্সট জেএস-এ দেখানো যায়
+            insertedId: result.insertedId
+        });
+    } catch (error) {
+        console.error("ডাটা সেভ করতে সমস্যা হয়েছে:", error);
+        res.status(500).json({ success: false, message: "সার্ভারে কোনো সমস্যা হয়েছে, আবার চেষ্টা করুন।" });
+    }
+});
 
     // ==========================================
     // ১. সমস্ত ভর্তি আবেদনপত্র ডাটাবেজ থেকে নিয়ে আসার GET API
