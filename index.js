@@ -1,7 +1,6 @@
 require('dotenv').config();
 
-// const dns = require('node:dns');
-// dns.setServers(['1.1.1.1', '1.0.0.1']);
+// MONGODB_URI=mongodb://aimhabiganj:r9eTrIxDeV8lsUKI@ac-famfzlt-shard-00-00.w9cbrwo.mongodb.net:27017,ac-famfzlt-shard-00-01.w9cbrwo.mongodb.net:27017,ac-famfzlt-shard-00-02.w9cbrwo.mongodb.net:27017/aimhabiganj?ssl=true&replicaSet=atlas-131uq2-shard-0&authSource=admin&appName=Cluster0
 
 const express = require('express');
 const cors = require('cors');
