@@ -30,6 +30,7 @@ async function run() {
         // কালেকশনসমূহ
         const admissionCollection = database.collection("admissions");
         const countersCollection = database.collection("counters");
+        const studentsCollection = database.collection("students");
         const deletedIdsCollection = database.collection("deleted_student_ids");
         const galleryCollection = database.collection("gallery");
         const settingsCollection = database.collection("settings");
@@ -37,6 +38,45 @@ async function run() {
         const feeStructuresCollection = database.collection("fee_structures");
         const receiptsCollection = database.collection("finance_receipts");
 
+
+        // ১. শুধুমাত্র Approved বা ফিল্টার করা শিক্ষার্থীদের তালিকা পাওয়ার API
+app.get('/api/students', async (req, res) => {
+    try {
+        const { status, class: studentClass, search } = req.query;
+
+        // ডিফল্টভাবে শুধু 'approved' শিক্ষার্থীদের ফিল্টার করবে
+        let query = { status: status || "approved" };
+
+        // নির্দিষ্ট ক্লাস অনুযায়ী ফিল্টার (যদি পাঠানো হয়)
+        if (studentClass) {
+            query.class = studentClass;
+        }
+
+        // নাম বা রোল নম্বর অনুযায়ী সার্চ (যদি পাঠানো হয়)
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: "i" } },
+                { rollNumber: { $regex: search, $options: "i" } },
+                { studentId: { $regex: search, $options: "i" } }
+            ];
+        }
+
+        const students = await studentsCollection
+            .find(query)
+            .sort({ rollNumber: 1, createdAt: -1 })
+            .toArray();
+
+        res.json({ success: true, count: students.length, data: students });
+    } catch (error) {
+        console.error("Error fetching students:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "শিক্ষার্থী তথ্যসমূহ নিয়ে আসতে সমস্যা হয়েছে।" 
+        });
+    }
+});
+
+        
         // ==========================================
         // ১. ফান্ড সম্পর্কিত APIs
         // ==========================================
