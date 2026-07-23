@@ -76,6 +76,88 @@ app.get('/api/students', async (req, res) => {
     }
 });
 
+       
+// ১. স্টুডেন্টের নির্দিষ্ট তথ্য লোড করার জন্য (GET API)
+app.get('/api/students/edit/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "অকার্যকর আইডি ফর্ম্যাট।" 
+            });
+        }
+
+        const student = await studentsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (student) {
+            res.json({ success: true, data: student });
+        } else {
+            res.status(404).json({ 
+                success: false, 
+                message: "শিক্ষার্থীর কোনো তথ্য পাওয়া যায়নি।" 
+            });
+        }
+    } catch (error) {
+        console.error("GET Student Error:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "সার্ভারে সমস্যা হয়েছে।" 
+        });
+    }
+});
+
+// ২. স্টুডেন্টের আপডেটকৃত তথ্য সেভ করার জন্য (PUT API)
+app.put('/api/students/edit/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "অকার্যকর আইডি ফর্ম্যাট।" 
+            });
+        }
+
+        // ক্লায়েন্ট পেজ থেকে পাঠানো ডেটা
+        const updatedData = req.body;
+
+        // আপডেট করার সময় MongoDB-র ডিফল্ট `_id` ফিল্ডটি বাদ রাখা সুরক্ষিত
+        delete updatedData._id;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: {
+                ...updatedData,
+                updatedAt: new Date() // আপডেট করার সময় রেকর্ড রাখার জন্য
+            }
+        };
+
+        const result = await studentsCollection.updateOne(filter, updateDoc);
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "আপডেট করার জন্য শিক্ষার্থীর তথ্য পাওয়া যায়নি।" 
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "শিক্ষার্থীর তথ্য সফলভাবে আপডেট করা হয়েছে।",
+            modifiedCount: result.modifiedCount
+        });
+
+    } catch (error) {
+        console.error("PUT Student Error:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "তথ্য আপডেট করার সময় সার্ভারে সমস্যা হয়েছে।" 
+        });
+    }
+});
+
         
         // ==========================================
         // ১. ফান্ড সম্পর্কিত APIs
