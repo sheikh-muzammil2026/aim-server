@@ -43,6 +43,52 @@ async function run() {
 // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
 // ==========================================
 
+		/**
+ * নির্দিষ্ট ক্লাস এবং স্ট্যাটাস অনুযায়ী শিক্ষার্থীদের তালিকা নিয়ে আসার API
+ * Endpoint: GET /api/students?class=প্রথম&status=approved
+ */
+app.get('/api/students', async (req, res) => {
+    try {
+        const { class: className, status } = req.query;
+
+        // ১. ডায়নামিক ফিল্টার অবজেক্ট তৈরি
+        const filter = {};
+
+        // যদি ক্লাস রেসপন্সে পাঠানো হয়ে থাকে
+        if (className) {
+            filter.$or = [
+                { class: className },
+                { "academicInfo.class": className }
+            ];
+        }
+
+        // যদি স্ট্যাটাস পাঠানো হয়ে থাকে (যেমন: status=approved)
+        if (status) {
+            filter.status = status;
+        }
+
+        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্ট (Sort) করা
+        const students = await studentsCollection
+            .find(filter)
+            .sort({ "officeUse.rollNumber": 1, rollNumber: 1, roll: 1 }) // রোল অনুযায়ী সিরিয়াল করা
+            .toArray();
+
+        // ৩. ফ্রন্টএন্ডের সাথে মিলিয়ে সঠিক ফরম্যাটে রেসপন্স পাঠানো
+        res.status(200).json({
+            success: true,
+            count: students.length,
+            data: students
+        });
+
+    } catch (error) {
+        console.error("Fetch Students API Error:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "শিক্ষার্থীদের তথ্য লোড করতে ব্যর্থ হয়েছে।" 
+        });
+    }
+});
+
 /**
  * ১. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
  * Endpoint: POST /api/marks/input
