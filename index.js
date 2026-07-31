@@ -39,7 +39,7 @@ async function run() {
         const receiptsCollection = database.collection("finance_receipts");
 		const marksCollection = database.collection("marks");
 
-        // ==========================================
+// ==========================================
 // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
 // ==========================================
 
@@ -58,17 +58,22 @@ app.post('/api/marks/input', async (req, res) => {
             });
         }
 
-        const academicYear = year || new Date().getFullYear().toString();
-        const filter = { studentId, class: studentClass, subject, year: academicYear };
+        // শিক্ষাবর্ষ না পাঠালে ডিফল্ট হিসেবে '২০২৬-২০২৭' ব্যবহার করা হচ্ছে
+        const academicYear = year || "২০২৬-২০২৭";
+        const filter = { studentId: String(studentId), class: studentClass, subject, year: academicYear };
 
-        // dynamiely 'term1', 'term2', or 'annual' অবজেক্ট আপডেট হবে
+        // ডায়নামিকালি 'term1', 'term2', or 'annual' অবজেক্ট আপডেট
         const updateField = {};
-        if (ctMark !== undefined) updateField[`${examType}.ct`] = parseFloat(ctMark) || 0;
-        if (examMark !== undefined) updateField[`${examType}.exam`] = parseFloat(examMark) || 0;
+        if (ctMark !== undefined && ctMark !== '') {
+            updateField[`${examType}.ct`] = parseFloat(ctMark) || 0;
+        }
+        if (examMark !== undefined && examMark !== '') {
+            updateField[`${examType}.exam`] = parseFloat(examMark) || 0;
+        }
 
         const updateDoc = {
             $set: {
-                studentName,
+                studentName: studentName || "N/A",
                 teacherId: teacherId || "N/A",
                 updatedAt: new Date(),
                 ...updateField
@@ -78,8 +83,8 @@ app.post('/api/marks/input', async (req, res) => {
             }
         };
 
-        // upsert: true রাখার ফলে রেকর্ড না থাকলে তৈরি হবে, থাকলে আপডেট হবে
-        const result = await marksCollection.updateOne(filter, updateDoc, { upsert: true });
+        // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন তৈরি হবে
+        await marksCollection.updateOne(filter, updateDoc, { upsert: true });
 
         res.status(200).json({
             success: true,
@@ -100,30 +105,37 @@ app.post('/api/marks/input', async (req, res) => {
 app.get('/api/results/student/:studentId', async (req, res) => {
     try {
         const { studentId } = req.params;
-        const year = req.query.year || new Date().getFullYear().toString();
+        const year = req.query.year || "২০২৬-২০২৭";
 
-        // ১. স্টুডেন্ট প্রোফাইল ডাটা চেক
+        // ১. স্টুডেন্ট প্রোফাইল ডাটা ব্যাকএন্ড ডাটাবেজ থেকে চেক
         const studentInfo = await studentsCollection.findOne({ 
-            $or: [{ studentId: studentId }, { _id: ObjectId.isValid(studentId) ? new ObjectId(studentId) : null }] 
+            $or: [
+                { studentId: studentId }, 
+                { studentId: String(studentId) },
+                { _id: ObjectId.isValid(studentId) ? new ObjectId(studentId) : null }
+            ] 
         });
 
         if (!studentInfo) {
             return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
         }
 
+        const targetStudentId = studentInfo.studentId || studentId;
+
         // ২. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
         const markSheets = await marksCollection.find({ 
-            studentId: studentInfo.studentId || studentId, 
+            studentId: targetStudentId, 
             year: year 
         }).toArray();
 
         res.json({
             success: true,
             student: {
-                studentId: studentInfo.studentId,
-                name: studentInfo.name || studentInfo.studentName,
-                class: studentInfo.class,
-                roll: studentInfo.rollNumber || studentInfo.roll
+                studentId: targetStudentId,
+                // ক্লায়েন্ট সাইড ফর্মে থাকা বাংলা বা ইংরেজি নাম হ্যান্ডলিং
+                name: studentInfo.studentNameBangla || studentInfo.studentNameEnglish || studentInfo.name || "N/A",
+                class: studentInfo.class || studentInfo.academicInfo?.class,
+                roll: studentInfo.officeUse?.rollNumber || studentInfo.rollNumber || studentInfo.roll || "N/A"
             },
             year,
             results: markSheets
@@ -148,9 +160,9 @@ app.get('/api/results/class', async (req, res) => {
             return res.status(400).json({ success: false, message: "ক্লাসের নাম সিলেক্ট করুন।" });
         }
 
-        const selectedYear = year || new Date().getFullYear().toString();
+        const selectedYear = year || "২০২৬-২০২৭";
 
-        // Aggregation দিয়ে নির্দিষ্ট ক্লাসের সব স্টুডেন্টের মার্কস একটি এরেতে গ্রুপ করে আনবে
+        // Aggregation দিয়ে নির্দিষ্ট ক্লাসের সব স্টুডেন্টের মার্কস একটি এরেতে গ্রুপ করে আনা
         const classResults = await marksCollection.aggregate([
             {
                 $match: {
@@ -195,6 +207,7 @@ app.get('/api/results/class', async (req, res) => {
         res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
     }
 });
+
 
         // ১. শুধুমাত্র Approved বা ফিল্টার করা শিক্ষার্থীদের তালিকা পাওয়ার API
 app.get('/api/students', async (req, res) => {
