@@ -37,7 +37,164 @@ async function run() {
         const fundsCollection = database.collection("finance_funds");
         const feeStructuresCollection = database.collection("fee_structures");
         const receiptsCollection = database.collection("finance_receipts");
+		const marksCollection = database.collection("marks");
 
+        // ==========================================
+// ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
+// ==========================================
+
+/**
+ * ১. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
+ * Endpoint: POST /api/marks/input
+ */
+app.post('/api/marks/input', async (req, res) => {
+    try {
+        const { studentId, studentName, class: studentClass, subject, examType, ctMark, examMark, year, teacherId } = req.body;
+
+        if (!studentId || !studentClass || !subject || !examType) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "প্রয়োজনীয় তথ্য (Student ID, Class, Subject, Exam Type) দেওয়া হয়নি।" 
+            });
+        }
+
+        const academicYear = year || new Date().getFullYear().toString();
+        const filter = { studentId, class: studentClass, subject, year: academicYear };
+
+        // dynamiely 'term1', 'term2', or 'annual' অবজেক্ট আপডেট হবে
+        const updateField = {};
+        if (ctMark !== undefined) updateField[`${examType}.ct`] = parseFloat(ctMark) || 0;
+        if (examMark !== undefined) updateField[`${examType}.exam`] = parseFloat(examMark) || 0;
+
+        const updateDoc = {
+            $set: {
+                studentName,
+                teacherId: teacherId || "N/A",
+                updatedAt: new Date(),
+                ...updateField
+            },
+            $setOnInsert: {
+                createdAt: new Date()
+            }
+        };
+
+        // upsert: true রাখার ফলে রেকর্ড না থাকলে তৈরি হবে, থাকলে আপডেট হবে
+        const result = await marksCollection.updateOne(filter, updateDoc, { upsert: true });
+
+        res.status(200).json({
+            success: true,
+            message: "মার্কস সফলভাবে সংরক্ষিত/আপডেট করা হয়েছে।"
+        });
+
+    } catch (error) {
+        console.error("Marks input error:", error);
+        res.status(500).json({ success: false, message: "মার্কস সেভ করতে সমস্যা হয়েছে।" });
+    }
+});
+
+
+/**
+ * ২. নির্দিষ্ট শিক্ষার্থীর একক আইডি দিয়ে রেজাল্ট সার্চ API
+ * Endpoint: GET /api/results/student/:studentId
+ */
+app.get('/api/results/student/:studentId', async (req, res) => {
+    try {
+        const { studentId } = req.params;
+        const year = req.query.year || new Date().getFullYear().toString();
+
+        // ১. স্টুডেন্ট প্রোফাইল ডাটা চেক
+        const studentInfo = await studentsCollection.findOne({ 
+            $or: [{ studentId: studentId }, { _id: ObjectId.isValid(studentId) ? new ObjectId(studentId) : null }] 
+        });
+
+        if (!studentInfo) {
+            return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+        }
+
+        // ২. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
+        const markSheets = await marksCollection.find({ 
+            studentId: studentInfo.studentId || studentId, 
+            year: year 
+        }).toArray();
+
+        res.json({
+            success: true,
+            student: {
+                studentId: studentInfo.studentId,
+                name: studentInfo.name || studentInfo.studentName,
+                class: studentInfo.class,
+                roll: studentInfo.rollNumber || studentInfo.roll
+            },
+            year,
+            results: markSheets
+        });
+
+    } catch (error) {
+        console.error("Single Student Result Fetch Error:", error);
+        res.status(500).json({ success: false, message: "রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
+    }
+});
+
+
+/**
+ * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
+ * Endpoint: GET /api/results/class
+ */
+app.get('/api/results/class', async (req, res) => {
+    try {
+        const { class: className, year } = req.query;
+
+        if (!className) {
+            return res.status(400).json({ success: false, message: "ক্লাসের নাম সিলেক্ট করুন।" });
+        }
+
+        const selectedYear = year || new Date().getFullYear().toString();
+
+        // Aggregation দিয়ে নির্দিষ্ট ক্লাসের সব স্টুডেন্টের মার্কস একটি এরেতে গ্রুপ করে আনবে
+        const classResults = await marksCollection.aggregate([
+            {
+                $match: {
+                    class: className,
+                    year: selectedYear
+                }
+            },
+            {
+                $group: {
+                    _id: "$studentId",
+                    studentName: { $first: "$studentName" },
+                    allSubjects: {
+                        $push: {
+                            subject: "$subject",
+                            term1: "$term1",
+                            term2: "$term2",
+                            annual: "$annual"
+                        }
+                    }
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    studentId: "$_id",
+                    studentName: 1,
+                    allSubjects: 1
+                }
+            }
+        ]).toArray();
+
+        res.json({
+            success: true,
+            class: className,
+            year: selectedYear,
+            count: classResults.length,
+            data: classResults
+        });
+
+    } catch (error) {
+        console.error("Class Result Fetch Error:", error);
+        res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
+    }
+});
 
         // ১. শুধুমাত্র Approved বা ফিল্টার করা শিক্ষার্থীদের তালিকা পাওয়ার API
 app.get('/api/students', async (req, res) => {
