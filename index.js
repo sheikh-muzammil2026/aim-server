@@ -43,37 +43,39 @@ async function run() {
 // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
 // ==========================================
 
-		/**
+	/**
  * নির্দিষ্ট ক্লাস এবং স্ট্যাটাস অনুযায়ী শিক্ষার্থীদের তালিকা নিয়ে আসার API
- * Endpoint: GET /api/students?class=প্রথম&status=approved
+ * Endpoint: GET /api/students?class=প্লে&status=approved
  */
 app.get('/api/students', async (req, res) => {
     try {
         const { class: className, status } = req.query;
 
-        // ১. ডায়নামিক ফিল্টার অবজেক্ট তৈরি
+        // ১. ডায়নামিক ফিল্টার অবজেক্ট
         const filter = {};
 
-        // যদি ক্লাস রেসপন্সে পাঠানো হয়ে থাকে
+        // ক্লাস ফিল্টারিং (PreHifz, Hifz অথবা Academy - যেকোনো একটির মধ্যে ক্লাস মিললেই হবে)
         if (className) {
             filter.$or = [
-                { class: className },
-                { "academicInfo.class": className }
+                { "divisionAcademy.class": className },
+                { "divisionHifz.class": className },
+                { "divisionPreHifz.class": className },
+                { class: className } // সেফটি ব্যাকআপ
             ];
         }
 
-        // যদি স্ট্যাটাস পাঠানো হয়ে থাকে (যেমন: status=approved)
+        // স্ট্যাটাস ফিল্টারিং (Case-Insensitive করার জন্য Case Ignore Regex ব্যবহার করা হয়েছে)
         if (status) {
-            filter.status = status;
+            filter.status = { $regex: new RegExp(`^${status}$`, 'i') }; // "Approved" বা "approved" উভয়ই ম্যাচ করবে
         }
 
-        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্ট (Sort) করা
+        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং
         const students = await studentsCollection
             .find(filter)
-            .sort({ "officeUse.rollNumber": 1, rollNumber: 1, roll: 1 }) // রোল অনুযায়ী সিরিয়াল করা
+            .sort({ "officeUse.rollNumber": 1, studentId: 1 }) // রোল না থাকলে studentId দিয়ে সর্ট করবে
             .toArray();
 
-        // ৩. ফ্রন্টএন্ডের সাথে মিলিয়ে সঠিক ফরম্যাটে রেসপন্স পাঠানো
+        // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
         res.status(200).json({
             success: true,
             count: students.length,
@@ -88,7 +90,6 @@ app.get('/api/students', async (req, res) => {
         });
     }
 });
-
 /**
  * ১. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
  * Endpoint: POST /api/marks/input
@@ -104,7 +105,7 @@ app.post('/api/marks/input', async (req, res) => {
             });
         }
 
-        // শিক্ষাবর্ষ না পাঠালে ডিফল্ট হিসেবে '২০২৬-২০২৭' ব্যবহার করা হচ্ছে
+        // ডাটাবেজের সাথে মিলিয়ে শিক্ষাবর্ষ (যেমন: "২০২৬-২০২৭")
         const academicYear = year || "২০২৬-২০২৭";
         const filter = { studentId: String(studentId), class: studentClass, subject, year: academicYear };
 
@@ -129,7 +130,7 @@ app.post('/api/marks/input', async (req, res) => {
             }
         };
 
-        // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন তৈরি হবে
+        // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন এন্ট্রি তৈরি হবে
         await marksCollection.updateOne(filter, updateDoc, { upsert: true });
 
         res.status(200).json({
@@ -168,7 +169,14 @@ app.get('/api/results/student/:studentId', async (req, res) => {
 
         const targetStudentId = studentInfo.studentId || studentId;
 
-        // ২. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
+        // ২. ডাটাবেজ ফিল্ড স্ট্রাকচার থেকে সঠিক Class নির্বাচন
+        const studentClass = studentInfo.divisionAcademy?.class 
+            || studentInfo.divisionHifz?.class 
+            || studentInfo.divisionPreHifz?.class 
+            || studentInfo.class 
+            || "N/A";
+
+        // ৩. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
         const markSheets = await marksCollection.find({ 
             studentId: targetStudentId, 
             year: year 
@@ -178,10 +186,11 @@ app.get('/api/results/student/:studentId', async (req, res) => {
             success: true,
             student: {
                 studentId: targetStudentId,
-                // ক্লায়েন্ট সাইড ফর্মে থাকা বাংলা বা ইংরেজি নাম হ্যান্ডলিং
-                name: studentInfo.studentNameBangla || studentInfo.studentNameEnglish || studentInfo.name || "N/A",
-                class: studentInfo.class || studentInfo.academicInfo?.class,
-                roll: studentInfo.officeUse?.rollNumber || studentInfo.rollNumber || studentInfo.roll || "N/A"
+                // ডাটাবেজের আসল ফিল্ড থেকে নাম পড়া হচ্ছে
+                name: studentInfo.studentNameBangla || studentInfo.studentNameEnglish || "N/A",
+                class: studentClass,
+                roll: studentInfo.officeUse?.rollNumber || "N/A",
+                sessionYear: studentInfo.sessionYear || year
             },
             year,
             results: markSheets
@@ -253,6 +262,7 @@ app.get('/api/results/class', async (req, res) => {
         res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
     }
 });
+
 
 
         // ১. শুধুমাত্র Approved বা ফিল্টার করা শিক্ষার্থীদের তালিকা পাওয়ার API
