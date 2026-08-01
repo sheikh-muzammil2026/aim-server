@@ -37,354 +37,360 @@ async function run() {
         const fundsCollection = database.collection("finance_funds");
         const feeStructuresCollection = database.collection("fee_structures");
         const receiptsCollection = database.collection("finance_receipts");
-		const marksCollection = database.collection("marks");
+        const marksCollection = database.collection("marks");
 
-// ==========================================
-// ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
-// ==========================================
+        // ==========================================
+        // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
+        // ==========================================
 
-	/**
- * নির্দিষ্ট ক্লাস এবং স্ট্যাটাস অনুযায়ী শিক্ষার্থীদের তালিকা নিয়ে আসার API
- * Endpoint: GET /api/students?class=প্লে&status=approved
- */
-app.get('/api/students', async (req, res) => {
-    try {
-        const { class: className, status } = req.query;
+        /**
+     * নির্দিষ্ট ক্লাস এবং স্ট্যাটাস অনুযায়ী শিক্ষার্থীদের তালিকা নিয়ে আসার API
+     * Endpoint: GET /api/students?class=প্লে&status=approved
+     */
+        app.get('/api/students', async (req, res) => {
+            try {
+                const { class: className, status, search } = req.query;
 
-        // ১. ডায়নামিক ফিল্টার অবজেক্ট
-        const filter = {};
+                // ১. ডায়নামিক ফিল্টার অবজেক্ট
+                const filter = {};
 
-        // ক্লাস ফিল্টারিং (PreHifz, Hifz অথবা Academy - যেকোনো একটির মধ্যে ক্লাস মিললেই হবে)
-        if (className) {
-            filter.$or = [
-                { "divisionAcademy.class": className },
-                { "divisionHifz.class": className },
-                { "divisionPreHifz.class": className },
-                { class: className } // সেফটি ব্যাকআপ
-            ];
-        }
-
-        // স্ট্যাটাস ফিল্টারিং (Case-Insensitive করার জন্য Case Ignore Regex ব্যবহার করা হয়েছে)
-        if (status) {
-            filter.status = { $regex: new RegExp(`^${status}$`, 'i') }; // "Approved" বা "approved" উভয়ই ম্যাচ করবে
-        }
-
-        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং
-        const students = await studentsCollection
-            .find(filter)
-            .sort({ "officeUse.rollNumber": 1, studentId: 1 }) // রোল না থাকলে studentId দিয়ে সর্ট করবে
-            .toArray();
-
-        // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
-        res.status(200).json({
-            success: true,
-            count: students.length,
-            data: students
-        });
-
-    } catch (error) {
-        console.error("Fetch Students API Error:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "শিক্ষার্থীদের তথ্য লোড করতে ব্যর্থ হয়েছে।" 
-        });
-    }
-});
-/**
- * ১. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
- * Endpoint: POST /api/marks/input
- */
-app.post('/api/marks/input', async (req, res) => {
-    try {
-        const { studentId, studentName, class: studentClass, subject, examType, ctMark, examMark, year, teacherId } = req.body;
-
-        if (!studentId || !studentClass || !subject || !examType) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "প্রয়োজনীয় তথ্য (Student ID, Class, Subject, Exam Type) দেওয়া হয়নি।" 
-            });
-        }
-
-        // ডাটাবেজের সাথে মিলিয়ে শিক্ষাবর্ষ (যেমন: "২০২৬-২০২৭")
-        const academicYear = year || "২০২৬-২০২৭";
-        const filter = { studentId: String(studentId), class: studentClass, subject, year: academicYear };
-
-        // ডায়নামিকালি 'term1', 'term2', or 'annual' অবজেক্ট আপডেট
-        const updateField = {};
-        if (ctMark !== undefined && ctMark !== '') {
-            updateField[`${examType}.ct`] = parseFloat(ctMark) || 0;
-        }
-        if (examMark !== undefined && examMark !== '') {
-            updateField[`${examType}.exam`] = parseFloat(examMark) || 0;
-        }
-
-        const updateDoc = {
-            $set: {
-                studentName: studentName || "N/A",
-                teacherId: teacherId || "N/A",
-                updatedAt: new Date(),
-                ...updateField
-            },
-            $setOnInsert: {
-                createdAt: new Date()
-            }
-        };
-
-        // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন এন্ট্রি তৈরি হবে
-        await marksCollection.updateOne(filter, updateDoc, { upsert: true });
-
-        res.status(200).json({
-            success: true,
-            message: "মার্কস সফলভাবে সংরক্ষিত/আপডেট করা হয়েছে।"
-        });
-
-    } catch (error) {
-        console.error("Marks input error:", error);
-        res.status(500).json({ success: false, message: "মার্কস সেভ করতে সমস্যা হয়েছে।" });
-    }
-});
-
-
-/**
- * ২. নির্দিষ্ট শিক্ষার্থীর একক আইডি দিয়ে রেজাল্ট সার্চ API
- * Endpoint: GET /api/results/student/:studentId
- */
-app.get('/api/results/student/:studentId', async (req, res) => {
-    try {
-        const { studentId } = req.params;
-        const year = req.query.year || "২০২৬-২০২৭";
-
-        // ১. স্টুডেন্ট প্রোফাইল ডাটা ব্যাকএন্ড ডাটাবেজ থেকে চেক
-        const studentInfo = await studentsCollection.findOne({ 
-            $or: [
-                { studentId: studentId }, 
-                { studentId: String(studentId) },
-                { _id: ObjectId.isValid(studentId) ? new ObjectId(studentId) : null }
-            ] 
-        });
-
-        if (!studentInfo) {
-            return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
-        }
-
-        const targetStudentId = studentInfo.studentId || studentId;
-
-        // ২. ডাটাবেজ ফিল্ড স্ট্রাকচার থেকে সঠিক Class নির্বাচন
-        const studentClass = studentInfo.divisionAcademy?.class 
-            || studentInfo.divisionHifz?.class 
-            || studentInfo.divisionPreHifz?.class 
-            || studentInfo.class 
-            || "N/A";
-
-        // ৩. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
-        const markSheets = await marksCollection.find({ 
-            studentId: targetStudentId, 
-            year: year 
-        }).toArray();
-
-        res.json({
-            success: true,
-            student: {
-                studentId: targetStudentId,
-                // ডাটাবেজের আসল ফিল্ড থেকে নাম পড়া হচ্ছে
-                name: studentInfo.studentNameBangla || studentInfo.studentNameEnglish || "N/A",
-                class: studentClass,
-                roll: studentInfo.officeUse?.rollNumber || "N/A",
-                sessionYear: studentInfo.sessionYear || year
-            },
-            year,
-            results: markSheets
-        });
-
-    } catch (error) {
-        console.error("Single Student Result Fetch Error:", error);
-        res.status(500).json({ success: false, message: "রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
-    }
-});
-
-
-/**
- * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
- * Endpoint: GET /api/results/class
- */
-app.get('/api/results/class', async (req, res) => {
-    try {
-        const { class: className, year } = req.query;
-
-        if (!className) {
-            return res.status(400).json({ success: false, message: "ক্লাসের নাম সিলেক্ট করুন।" });
-        }
-
-        const selectedYear = year || "২০২৬-২০২৭";
-
-        // Aggregation দিয়ে নির্দিষ্ট ক্লাসের সব স্টুডেন্টের মার্কস একটি এরেতে গ্রুপ করে আনা
-        const classResults = await marksCollection.aggregate([
-            {
-                $match: {
-                    class: className,
-                    year: selectedYear
+                // ক্লাস ফিল্টারিং (PreHifz, Hifz অথবা Academy - যেকোনো একটির মধ্যে ক্লাস মিললেই হবে)
+                if (className) {
+                    filter.$or = [
+                        { "divisionAcademy.class": className },
+                        { "divisionHifz.class": className },
+                        { "divisionPreHifz.class": className }
+                    ];
                 }
-            },
-            {
-                $group: {
-                    _id: "$studentId",
-                    studentName: { $first: "$studentName" },
-                    allSubjects: {
-                        $push: {
-                            subject: "$subject",
-                            term1: "$term1",
-                            term2: "$term2",
-                            annual: "$annual"
-                        }
+
+                // স্ট্যাটাস ফিল্টারিং (Case-Insensitive করার জন্য Case Ignore Regex ব্যবহার করা হয়েছে)
+                if (status) {
+                    filter.status = { $regex: new RegExp(`^${status}$`, 'i') }; // "Approved" বা "approved" উভয়ই ম্যাচ করবে
+                }
+
+                // সার্চ ফিল্টারিং (যদি পাঠানো হয়)
+                if (search) {
+                    const searchRegex = { $regex: search, $options: "i" };
+                    const searchFilter = [
+                        { studentNameBangla: searchRegex },
+                        { studentNameEnglish: searchRegex },
+                        { "officeUse.rollNumber": searchRegex },
+                        { studentId: searchRegex }
+                    ];
+                    if (filter.$or) {
+                        filter.$and = [
+                            { $or: filter.$or },
+                            { $or: searchFilter }
+                        ];
+                        delete filter.$or;
+                    } else {
+                        filter.$or = searchFilter;
                     }
                 }
-            },
-            {
-                $project: {
-                    _id: 0,
-                    studentId: "$_id",
-                    studentName: 1,
-                    allSubjects: 1
+
+                // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং
+                const students = await studentsCollection
+                    .find(filter)
+                    .sort({ "officeUse.rollNumber": 1, studentId: 1 }) // রোল না থাকলে studentId দিয়ে সর্ট করবে
+                    .toArray();
+
+                // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
+                res.status(200).json({
+                    success: true,
+                    count: students.length,
+                    data: students
+                });
+
+            } catch (error) {
+                console.error("Fetch Students API Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "শিক্ষার্থীদের তথ্য লোড করতে ব্যর্থ হয়েছে।"
+                });
+            }
+        });
+
+        /**
+         * ১. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
+         * Endpoint: POST /api/marks/input
+         */
+        app.post('/api/marks/input', async (req, res) => {
+            try {
+                const { studentId, studentName, class: studentClass, subject, examType, ctMark, examMark, year, teacherId } = req.body;
+
+                if (!studentId || !studentClass || !subject || !examType) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "প্রয়োজনীয় তথ্য (Student ID, Class, Subject, Exam Type) দেওয়া হয়নি।"
+                    });
                 }
+
+                // ডাটাবেজের সাথে মিলিয়ে শিক্ষাবর্ষ (যেমন: "২০২৬-২০২৭")
+                const academicYear = year || "২০২৬-২০২৭";
+                const filter = { studentId: String(studentId), class: studentClass, subject, year: academicYear };
+
+                // ডায়নামিকালি 'term1', 'term2', or 'annual' অবজেক্ট আপডেট
+                const parsedCt = parseFloat(ctMark);
+                const parsedExam = parseFloat(examMark);
+
+                const updateField = {};
+                updateField[`${examType}.ct`] = isNaN(parsedCt) ? 0 : parsedCt;
+                updateField[`${examType}.exam`] = isNaN(parsedExam) ? 0 : parsedExam;
+
+                const updateDoc = {
+                    $set: {
+                        studentName: studentName || "N/A",
+                        teacherId: teacherId || "N/A",
+                        updatedAt: new Date(),
+                        ...updateField
+                    },
+                    $setOnInsert: {
+                        createdAt: new Date()
+                    }
+                };
+
+                // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন এন্ট্রি তৈরি হবে
+                await marksCollection.updateOne(filter, updateDoc, { upsert: true });
+
+                res.status(200).json({
+                    success: true,
+                    message: "মার্কস সফলভাবে সংরক্ষিত/আপডেট করা হয়েছে।"
+                });
+
+            } catch (error) {
+                console.error("Marks input error:", error);
+                res.status(500).json({ success: false, message: "মার্কস সেভ করতে সমস্যা হয়েছে।" });
             }
-        ]).toArray();
-
-        res.json({
-            success: true,
-            class: className,
-            year: selectedYear,
-            count: classResults.length,
-            data: classResults
         });
 
-    } catch (error) {
-        console.error("Class Result Fetch Error:", error);
-        res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
-    }
-});
 
+        /**
+         * ২. নির্দিষ্ট শিক্ষার্থীর একক আইডি দিয়ে রেজাল্ট সার্চ API
+         * Endpoint: GET /api/results/student/:studentId
+         */
+        app.get('/api/results/student/:studentId', async (req, res) => {
+            try {
+                const { studentId } = req.params;
+                const year = req.query.year || "২০২৬-২০২৭";
 
+                // ১. স্টুডেন্ট প্রোফাইল ডাটা ব্যাকএন্ড ডাটাবেজ থেকে চেক
+                const studentQuery = {
+                    $or: [
+                        { studentId: studentId },
+                        { studentId: String(studentId) }
+                    ]
+                };
+                if (ObjectId.isValid(studentId)) {
+                    studentQuery.$or.push({ _id: new ObjectId(studentId) });
+                }
 
-        // ১. শুধুমাত্র Approved বা ফিল্টার করা শিক্ষার্থীদের তালিকা পাওয়ার API
-app.get('/api/students', async (req, res) => {
-    try {
-        const { status, class: studentClass, search } = req.query;
+                const studentInfo = await studentsCollection.findOne(studentQuery);
 
-        // ডিফল্টভাবে শুধু 'approved' শিক্ষার্থীদের ফিল্টার করবে
-        let query = { status: status || "approved" };
+                if (!studentInfo) {
+                    return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+                }
 
-        // নির্দিষ্ট ক্লাস অনুযায়ী ফিল্টার (যদি পাঠানো হয়)
-        if (studentClass) {
-            query.class = studentClass;
-        }
+                const targetStudentId = studentInfo.studentId || studentId;
 
-        // নাম বা রোল নম্বর অনুযায়ী সার্চ (যদি পাঠানো হয়)
-        if (search) {
-            query.$or = [
-                { name: { $regex: search, $options: "i" } },
-                { rollNumber: { $regex: search, $options: "i" } },
-                { studentId: { $regex: search, $options: "i" } }
-            ];
-        }
+                // ২. ডাটাবেজ ফিল্ড স্ট্রাকচার থেকে সঠিক Class নির্বাচন
+                const studentClass = studentInfo.divisionAcademy?.class
+                    || studentInfo.divisionHifz?.class
+                    || studentInfo.divisionPreHifz?.class
+                    || studentInfo.class
+                    || "N/A";
 
-        const students = await studentsCollection
-            .find(query)
-            .sort({ rollNumber: 1, createdAt: -1 })
-            .toArray();
+                // ৩. উক্ত স্টুডেন্টের সব সাবজেক্টের ইনপুট করা মার্কস নিয়ে আসা
+                const markSheets = await marksCollection.find({
+                    studentId: targetStudentId,
+                    year: year
+                }).toArray();
 
-        res.json({ success: true, count: students.length, data: students });
-    } catch (error) {
-        console.error("Error fetching students:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "শিক্ষার্থী তথ্যসমূহ নিয়ে আসতে সমস্যা হয়েছে।" 
-        });
-    }
-});
+                res.json({
+                    success: true,
+                    student: {
+                        studentId: targetStudentId,
+                        name: studentInfo.studentNameBangla || studentInfo.studentNameEnglish || "N/A",
+                        class: studentClass,
+                        roll: studentInfo.officeUse?.rollNumber || "N/A",
+                        sessionYear: studentInfo.sessionYear || year
+                    },
+                    year,
+                    results: markSheets
+                });
 
-       
-// ১. স্টুডেন্টের নির্দিষ্ট তথ্য লোড করার জন্য (GET API)
-app.get('/api/students/edit/:id', async (req, res) => {
-    try {
-        const id = req.params.id;
-        
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "অকার্যকর আইডি ফর্ম্যাট।" 
-            });
-        }
-
-        const student = await studentsCollection.findOne({ _id: new ObjectId(id) });
-
-        if (student) {
-            res.json({ success: true, data: student });
-        } else {
-            res.status(404).json({ 
-                success: false, 
-                message: "শিক্ষার্থীর কোনো তথ্য পাওয়া যায়নি।" 
-            });
-        }
-    } catch (error) {
-        console.error("GET Student Error:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "সার্ভারে সমস্যা হয়েছে।" 
-        });
-    }
-});
-
-// ২. স্টুডেন্টের আপডেটকৃত তথ্য সেভ করার জন্য (PUT API)
-app.put('/api/students/edit/:id', async (req, res) => {
-    try {
-        const id = req.params.id;
-
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "অকার্যকর আইডি ফর্ম্যাট।" 
-            });
-        }
-
-        // ক্লায়েন্ট পেজ থেকে পাঠানো ডেটা
-        const updatedData = req.body;
-
-        // আপডেট করার সময় MongoDB-র ডিফল্ট `_id` ফিল্ডটি বাদ রাখা সুরক্ষিত
-        delete updatedData._id;
-
-        const filter = { _id: new ObjectId(id) };
-        const updateDoc = {
-            $set: {
-                ...updatedData,
-                updatedAt: new Date() // আপডেট করার সময় রেকর্ড রাখার জন্য
+            } catch (error) {
+                console.error("Single Student Result Fetch Error:", error);
+                res.status(500).json({ success: false, message: "রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
             }
-        };
-
-        const result = await studentsCollection.updateOne(filter, updateDoc);
-
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "আপডেট করার জন্য শিক্ষার্থীর তথ্য পাওয়া যায়নি।" 
-            });
-        }
-
-        res.json({
-            success: true,
-            message: "শিক্ষার্থীর তথ্য সফলভাবে আপডেট করা হয়েছে।",
-            modifiedCount: result.modifiedCount
         });
 
-    } catch (error) {
-        console.error("PUT Student Error:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "তথ্য আপডেট করার সময় সার্ভারে সমস্যা হয়েছে।" 
-        });
-    }
-});
 
-        
+        /**
+         * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
+         * Endpoint: GET /api/results/class
+         */
+        /**
+  * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
+  * Endpoint: GET /api/results/class
+  */
+        app.get('/api/results/class', async (req, res) => {
+            try {
+                const { class: className, year, term } = req.query;
+
+                if (!className) {
+                    return res.status(400).json({ success: false, message: "ক্লাসের নাম সিলেক্ট করুন।" });
+                }
+
+                const selectedYear = year || "২০২৬-২০২৭";
+                const selectedTerm = term || "annual";
+
+                // ১. ট্রিম করে স্পেস তুলে দেওয়া এবং Case-insensitive Regex তৈরি
+                const classRegex = new RegExp(`^${className.trim()}$`, 'i');
+                const yearRegex = new RegExp(`^${selectedYear.trim()}$`, 'i');
+
+                // ২. Aggregation Pipeline
+                const classResults = await marksCollection.aggregate(
+                    [
+                        {
+                            $match: {
+                                class: classRegex,
+                                year: yearRegex
+                            }
+                        },
+                        {
+                            $group: {
+                                _id: { $toString: "$studentId" },
+                                studentName: { $first: "$studentName" },
+                                allSubjects: {
+                                    $push: {
+                                        subject: "$subject",
+                                        term1: "$term1",
+                                        term2: "$term2",
+                                        annual: "$annual"
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            $project: {
+                                _id: 0,
+                                studentId: "$_id",
+                                studentName: 1,
+                                allSubjects: 1
+                            }
+                        },
+                        {
+                            $sort: { studentId: 1 } // সর্টিং পাইপলাইনের ভেতরেই রাখা ভালো
+                        }
+                    ],
+                    // 💡 Collation অপশনটি এখানে ২য় প্যারামিটার হিসেবে পাস করতে হবে
+                    {
+                        collation: { locale: "en", numericOrdering: true }
+                    }
+                ).toArray();
+
+                res.json({
+                    success: true,
+                    class: className,
+                    year: selectedYear,
+                    term: selectedTerm,
+                    count: classResults.length,
+                    data: classResults
+                });
+
+            } catch (error) {
+                console.error("Class Result Fetch Error:", error);
+                res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+
+
+
+
+
+        // ১. স্টুডেন্টের নির্দিষ্ট তথ্য লোড করার জন্য (GET API)
+        app.get('/api/students/edit/:id', async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "অকার্যকর আইডি ফর্ম্যাট।"
+                    });
+                }
+
+                const student = await studentsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (student) {
+                    res.json({ success: true, data: student });
+                } else {
+                    res.status(404).json({
+                        success: false,
+                        message: "শিক্ষার্থীর কোনো তথ্য পাওয়া যায়নি।"
+                    });
+                }
+            } catch (error) {
+                console.error("GET Student Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "সার্ভারে সমস্যা হয়েছে।"
+                });
+            }
+        });
+
+        // ২. স্টুডেন্টের আপডেটকৃত তথ্য সেভ করার জন্য (PUT API)
+        app.put('/api/students/edit/:id', async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "অকার্যকর আইডি ফর্ম্যাট।"
+                    });
+                }
+
+                // ক্লায়েন্ট পেজ থেকে পাঠানো ডেটা
+                const updatedData = req.body;
+
+                // আপডেট করার সময় MongoDB-র ডিফল্ট `_id` ফিল্ডটি বাদ রাখা সুরক্ষিত
+                delete updatedData._id;
+
+                const filter = { _id: new ObjectId(id) };
+                const updateDoc = {
+                    $set: {
+                        ...updatedData,
+                        updatedAt: new Date() // আপডেট করার সময় রেকর্ড রাখার জন্য
+                    }
+                };
+
+                const result = await studentsCollection.updateOne(filter, updateDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "আপডেট করার জন্য শিক্ষার্থীর তথ্য পাওয়া যায়নি।"
+                    });
+                }
+
+                res.json({
+                    success: true,
+                    message: "শিক্ষার্থীর তথ্য সফলভাবে আপডেট করা হয়েছে।",
+                    modifiedCount: result.modifiedCount
+                });
+
+            } catch (error) {
+                console.error("PUT Student Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "তথ্য আপডেট করার সময় সার্ভারে সমস্যা হয়েছে।"
+                });
+            }
+        });
+
+
         // ==========================================
         // ১. ফান্ড সম্পর্কিত APIs
         // ==========================================
