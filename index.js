@@ -116,54 +116,116 @@ async function run() {
          */
         app.post('/api/marks/input', async (req, res) => {
             try {
-                const { studentId, studentName, class: studentClass, subject, examType, ctMark, examMark, year, teacherId } = req.body;
+                const { class: studentClass, subject, examType, year, marksData } = req.body;
 
-                if (!studentId || !studentClass || !subject || !examType) {
+                // ভ্যালিডেশন চেক
+                if (!studentClass || !subject || !examType || !Array.isArray(marksData) || marksData.length === 0) {
                     return res.status(400).json({
                         success: false,
-                        message: "প্রয়োজনীয় তথ্য (Student ID, Class, Subject, Exam Type) দেওয়া হয়নি।"
+                        message: "প্রয়োজনীয় তথ্য (Class, Subject, Exam Type এবং Marks Data) সঠিকভাব দেওয়া হয়নি।"
                     });
                 }
 
-                // ডাটাবেজের সাথে মিলিয়ে শিক্ষাবর্ষ (যেমন: "২০২৬-২০২৭")
                 const academicYear = year || "২০২৬-২০২৭";
-                const filter = { studentId: String(studentId), class: studentClass, subject, year: academicYear };
 
-                // ডায়নামিকালি 'term1', 'term2', or 'annual' অবজেক্ট আপডেট
-                const parsedCt = parseFloat(ctMark);
-                const parsedExam = parseFloat(examMark);
+                // সকল শিক্ষার্থীর জন্য bulk operations তৈরি করা
+                const operations = marksData.map((student) => {
+                    const { studentId, studentName, rollNumber, ctMark, examMark } = student;
 
-                const updateField = {};
-                updateField[`${examType}.ct`] = isNaN(parsedCt) ? 0 : parsedCt;
-                updateField[`${examType}.exam`] = isNaN(parsedExam) ? 0 : parsedExam;
+                    const filter = {
+                        studentId: String(studentId),
+                        class: studentClass,
+                        subject: subject,
+                        year: academicYear
+                    };
 
-                const updateDoc = {
-                    $set: {
-                        studentName: studentName || "N/A",
-                        teacherId: teacherId || "N/A",
-                        updatedAt: new Date(),
-                        ...updateField
-                    },
-                    $setOnInsert: {
-                        createdAt: new Date()
-                    }
-                };
+                    const parsedCt = parseFloat(ctMark);
+                    const parsedExam = parseFloat(examMark);
 
-                // upsert: true রাখার ফলে আগে থেকে মার্কস থাকলে কেবল আপডেট হবে, না থাকলে নতুন এন্ট্রি তৈরি হবে
-                await marksCollection.updateOne(filter, updateDoc, { upsert: true });
+                    const updateField = {};
+                    updateField[`${examType}.ct`] = isNaN(parsedCt) ? 0 : parsedCt;
+                    updateField[`${examType}.exam`] = isNaN(parsedExam) ? 0 : parsedExam;
+
+                    return {
+                        updateOne: {
+                            filter: filter,
+                            update: {
+                                $set: {
+                                    studentName: studentName || "N/A",
+                                    rollNumber: rollNumber || "N/A",
+                                    updatedAt: new Date(),
+                                    ...updateField
+                                },
+                                $setOnInsert: {
+                                    createdAt: new Date()
+                                }
+                            },
+                            upsert: true
+                        }
+                    };
+                });
+
+                // bulkWrite এর মাধ্যমে একসাথে সব শিক্ষার্থীর ডাটা আপডেট/ইনসার্ট করা
+                const result = await marksCollection.bulkWrite(operations);
 
                 res.status(200).json({
                     success: true,
-                    message: "মার্কস সফলভাবে সংরক্ষিত/আপডেট করা হয়েছে।"
+                    message: "সকল শিক্ষার্থীর মার্কস সফলভাবে সংরক্ষণ ও আপডেট করা হয়েছে।",
+                    data: result
                 });
 
             } catch (error) {
                 console.error("Marks input error:", error);
-                res.status(500).json({ success: false, message: "মার্কস সেভ করতে সমস্যা হয়েছে।" });
+                res.status(500).json({
+                    success: false,
+                    message: "সার্ভারে মার্কস সেভ করতে সমস্যা হয়েছে।"
+                });
             }
         });
 
+        /**
+ * ২. পূর্বের ইনপুট করা মার্কস চেক/লোড করার API
+ * Endpoint: GET /api/marks/get
+ * Query Params: ?studentId=...&class=...&subject=...&year=...
+ */
+        app.get('/api/marks/get', async (req, res) => {
+            try {
+                const { class: studentClass, subject, year } = req.query;
 
+                // ভ্যালিডেশন: নির্দিষ্ট ক্লাসের সব ডাটা আনার জন্য Class এবং Subject আবশ্যক
+                if (!studentClass || !subject) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "প্রয়োজনীয় তথ্য (Class এবং Subject) দেওয়া হয়নি।"
+                    });
+                }
+
+                const academicYear = year || "২০২৬-২০২৭";
+
+                // ফিল্টার (studentId বাদ দেওয়া হয়েছে যেন ক্লাসের সব শিক্ষার্থীর ডাটা পাওয়া যায়)
+                const filter = {
+                    class: studentClass,
+                    subject: subject,
+                    year: academicYear
+                };
+
+                // ডাটাবেজ থেকে ওই ক্লাসের ও সাবজেক্টের সব শিক্ষার্থীর মার্কস বের করা
+                const marksData = await marksCollection.find(filter).toArray();
+
+                res.status(200).json({
+                    success: true,
+                    count: marksData.length,
+                    data: marksData
+                });
+
+            } catch (error) {
+                console.error("Marks fetch error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "মার্কস লোড করতে সমস্যা হয়েছে।"
+                });
+            }
+        });
         /**
          * ২. নির্দিষ্ট শিক্ষার্থীর একক আইডি দিয়ে রেজাল্ট সার্চ API
          * Endpoint: GET /api/results/student/:studentId
@@ -224,86 +286,75 @@ async function run() {
             }
         });
 
-
         /**
          * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
-         * Endpoint: GET /api/results/class
+         * Endpoint: GET /api/results/class?class=প্রথম&year=২০২৬-২০২৭&term=term1
          */
-        /**
-  * ৩. সম্পূর্ণ ক্লাসের সামারি/মেরিট লিস্ট এর জন্য API (MongoDB Aggregation)
-  * Endpoint: GET /api/results/class
-  */
         app.get('/api/results/class', async (req, res) => {
             try {
                 const { class: className, year, term } = req.query;
 
                 if (!className) {
-                    return res.status(400).json({ success: false, message: "ক্লাসের নাম সিলেক্ট করুন।" });
+                    return res.status(400).json({
+                        success: false,
+                        message: "ক্লাসের নাম সরবরাহ করা হয়নি।"
+                    });
                 }
 
                 const selectedYear = year || "২০২৬-২০২৭";
                 const selectedTerm = term || "annual";
 
-                // ১. ট্রিম করে স্পেস তুলে দেওয়া এবং Case-insensitive Regex তৈরি
+                // ১. কেস-ইনসেনসিটিভ ও ট্রিমড ফিল্টারিং
                 const classRegex = new RegExp(`^${className.trim()}$`, 'i');
                 const yearRegex = new RegExp(`^${selectedYear.trim()}$`, 'i');
 
                 // ২. Aggregation Pipeline
-                const classResults = await marksCollection.aggregate(
-                    [
-                        {
-                            $match: {
-                                class: classRegex,
-                                year: yearRegex
-                            }
-                        },
-                        {
-                            $group: {
-                                _id: { $toString: "$studentId" },
-                                studentName: { $first: "$studentName" },
-                                allSubjects: {
-                                    $push: {
-                                        subject: "$subject",
-                                        term1: "$term1",
-                                        term2: "$term2",
-                                        annual: "$annual"
-                                    }
+                const classResults = await marksCollection.aggregate([
+                    {
+                        $match: {
+                            class: classRegex,
+                            year: yearRegex
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: { $toString: "$studentId" },
+                            studentId: { $first: { $toString: "$studentId" } },
+                            studentName: { $first: "$studentName" },
+                            rollNumber: { $first: "$rollNumber" },
+                            allSubjects: {
+                                $push: {
+                                    subject: "$subject",
+                                    term1: "$term1",
+                                    term2: "$term2",
+                                    annual: "$annual"
                                 }
                             }
-                        },
-                        {
-                            $project: {
-                                _id: 0,
-                                studentId: "$_id",
-                                studentName: 1,
-                                allSubjects: 1
-                            }
-                        },
-                        {
-                            $sort: { studentId: 1 } // সর্টিং পাইপলাইনের ভেতরেই রাখা ভালো
                         }
-                    ],
-                    // 💡 Collation অপশনটি এখানে ২য় প্যারামিটার হিসেবে পাস করতে হবে
+                    },
                     {
-                        collation: { locale: "en", numericOrdering: true }
+                        $sort: {
+                            rollNumber: 1,
+                            studentId: 1
+                        }
                     }
-                ).toArray();
+                ]).toArray();
 
-                res.json({
+                res.status(200).json({
                     success: true,
-                    class: className,
-                    year: selectedYear,
-                    term: selectedTerm,
                     count: classResults.length,
+                    term: selectedTerm,
                     data: classResults
                 });
 
             } catch (error) {
-                console.error("Class Result Fetch Error:", error);
-                res.status(500).json({ success: false, message: "ক্লাস রেজাল্ট লোড করতে সমস্যা হয়েছে।" });
+                console.error("Class Results Aggregation Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "ক্লাসের ফলাফলের তথ্য লোড করতে সমস্যা হয়েছে।"
+                });
             }
         });
-
 
 
 
