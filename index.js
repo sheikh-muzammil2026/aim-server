@@ -38,6 +38,8 @@ async function run() {
         const feeStructuresCollection = database.collection("fee_structures");
         const receiptsCollection = database.collection("finance_receipts");
         const marksCollection = database.collection("marks");
+        const financeIncomesCollection = database.collection("finance_incomes");
+        const financeExpensesCollection = database.collection("finance_expenses");
 
         // ==========================================
         // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
@@ -850,6 +852,284 @@ async function run() {
                 }
             } catch (error) {
                 res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ==========================================
+        // ৬. ফাইনান্স (Income & Expense) সম্পর্কিত APIs
+        // ==========================================
+
+        // ১. আয় এন্ট্রি করার API
+        app.post('/api/finance/income', async (req, res) => {
+            try {
+                const { receiptNo, payerName, date, month, items, paymentMethod, description } = req.body;
+
+                if (!date || !month || !Array.isArray(items) || items.length === 0) {
+                    return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি আয়ের খাত দেওয়া আবশ্যক।" });
+                }
+
+                // মোট আয় হিসাব
+                const totalIncome = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const finalReceiptNo = receiptNo || "INC-" + Date.now().toString().slice(-9);
+
+                const newIncome = {
+                    receiptNo: finalReceiptNo,
+                    payerName: payerName || "N/A",
+                    date,
+                    month, // format: YYYY-MM
+                    items: items.map(item => ({
+                        head: item.head,
+                        amount: parseFloat(item.amount) || 0
+                    })),
+                    totalIncome,
+                    paymentMethod: paymentMethod || "Cash",
+                    description: description || "",
+                    createdAt: new Date()
+                };
+
+                const result = await financeIncomesCollection.insertOne(newIncome);
+                res.status(201).json({
+                    success: true,
+                    message: "আয়ের তথ্য সফলভাবে সংরক্ষণ করা হয়েছে!",
+                    insertedId: result.insertedId,
+                    data: newIncome
+                });
+            } catch (error) {
+                console.error("Income save error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে আয়ের তথ্য সংরক্ষণ করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ২. ব্যয় (ভাউচার) এন্ট্রি করার API
+        app.post('/api/finance/expense', async (req, res) => {
+            try {
+                const { voucherNo, receiverName, advanceAmount, chequeNo, date, month, items, description } = req.body;
+
+                if (!date || !month || !Array.isArray(items) || items.length === 0) {
+                    return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি ব্যয়ের খাত দেওয়া আবশ্যক।" });
+                }
+
+                const totalExpense = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const parsedAdvance = parseFloat(advanceAmount) || 0;
+                const balance = parsedAdvance - totalExpense;
+                const finalVoucherNo = voucherNo || "EXP-" + Date.now().toString().slice(-9);
+
+                const newExpense = {
+                    voucherNo: finalVoucherNo,
+                    receiverName: receiverName || "N/A",
+                    advanceAmount: parsedAdvance,
+                    chequeNo: chequeNo || "",
+                    date,
+                    month, // format: YYYY-MM
+                    items: items.map(item => ({
+                        head: item.head,
+                        amount: parseFloat(item.amount) || 0
+                    })),
+                    totalExpense,
+                    balance,
+                    description: description || "",
+                    createdAt: new Date()
+                };
+
+                const result = await financeExpensesCollection.insertOne(newExpense);
+                res.status(201).json({
+                    success: true,
+                    message: "ব্যয়ের তথ্য সফলভাবে ভাউচার হিসেবে সংরক্ষণ করা হয়েছে!",
+                    insertedId: result.insertedId,
+                    data: newExpense
+                });
+            } catch (error) {
+                console.error("Expense save error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে ব্যয়ের তথ্য সংরক্ষণ করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৩. মাসিক আয়ের ও ব্যয়ের সারসংক্ষেপ এবং খাত-ভিত্তিক হিসাব
+        app.get('/api/finance/summary', async (req, res) => {
+            try {
+                const { month, year } = req.query;
+
+                if (!month || !year) {
+                    return res.status(400).json({ success: false, message: "মাস এবং বছর সরবরাহ করা আবশ্যক।" });
+                }
+
+                const targetMonth = `${year}-${String(month).padStart(2, '0')}`;
+
+                // মোট আয় হিসাব
+                const incomeAggregation = await financeIncomesCollection.aggregate([
+                    { $match: { month: targetMonth } },
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: "$totalIncome" }
+                        }
+                    }
+                ]).toArray();
+
+                // মোট ব্যয় হিসাব
+                const expenseAggregation = await financeExpensesCollection.aggregate([
+                    { $match: { month: targetMonth } },
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: "$totalExpense" }
+                        }
+                    }
+                ]).toArray();
+
+                const totalIncome = incomeAggregation[0]?.total || 0;
+                const totalExpense = expenseAggregation[0]?.total || 0;
+                const netBalance = totalIncome - totalExpense;
+
+                // খাত-ভিত্তিক আয়ের হিসাব
+                const incomeCategoryBreakdown = await financeIncomesCollection.aggregate([
+                    { $match: { month: targetMonth } },
+                    { $unwind: "$items" },
+                    {
+                        $group: {
+                            _id: "$items.head",
+                            total: { $sum: "$items.amount" }
+                        }
+                    },
+                    { $sort: { total: -1 } }
+                ]).toArray();
+
+                // খাত-ভিত্তিক ব্যয়ের হিসাব
+                const expenseCategoryBreakdown = await financeExpensesCollection.aggregate([
+                    { $match: { month: targetMonth } },
+                    { $unwind: "$items" },
+                    {
+                        $group: {
+                            _id: "$items.head",
+                            total: { $sum: "$items.amount" }
+                        }
+                    },
+                    { $sort: { total: -1 } }
+                ]).toArray();
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        month: targetMonth,
+                        totalIncome,
+                        totalExpense,
+                        netBalance,
+                        incomeBreakdown: incomeCategoryBreakdown.map(item => ({ head: item._id, amount: item.total })),
+                        expenseBreakdown: expenseCategoryBreakdown.map(item => ({ head: item._id, amount: item.total }))
+                    }
+                });
+            } catch (error) {
+                console.error("Summary query error:", error);
+                res.status(500).json({ success: false, message: "সার্ভার থেকে আর্থিক সারসংক্ষেপ আনতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৪. লেনদেনের ইতিহাস ও অনুসন্ধান (Pagination & Search)
+        app.get('/api/finance/transactions', async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const type = req.query.type || 'all'; // all, income, expense
+                const search = req.query.search || '';
+                const startDate = req.query.startDate;
+                const endDate = req.query.endDate;
+
+                const skip = (page - 1) * limit;
+
+                const buildFilter = (isIncome) => {
+                    const filter = {};
+                    
+                    if (search) {
+                        const regex = { $regex: search, $options: 'i' };
+                        if (isIncome) {
+                            filter.$or = [
+                                { receiptNo: regex },
+                                { payerName: regex },
+                                { description: regex },
+                                { "items.head": regex }
+                            ];
+                        } else {
+                            filter.$or = [
+                                { voucherNo: regex },
+                                { receiverName: regex },
+                                { chequeNo: regex },
+                                { description: regex },
+                                { "items.head": regex }
+                            ];
+                        }
+                    }
+
+                    if (startDate || endDate) {
+                        filter.date = {};
+                        if (startDate) filter.date.$gte = startDate;
+                        if (endDate) filter.date.$lte = endDate;
+                    }
+
+                    return filter;
+                };
+
+                let transactions = [];
+                let totalCount = 0;
+
+                if (type === 'income') {
+                    const filter = buildFilter(true);
+                    totalCount = await financeIncomesCollection.countDocuments(filter);
+                    const list = await financeIncomesCollection.find(filter)
+                        .sort({ date: -1, createdAt: -1 })
+                        .skip(skip)
+                        .limit(limit)
+                        .toArray();
+                    transactions = list.map(item => ({ ...item, type: 'income' }));
+                } else if (type === 'expense') {
+                    const filter = buildFilter(false);
+                    totalCount = await financeExpensesCollection.countDocuments(filter);
+                    const list = await financeExpensesCollection.find(filter)
+                        .sort({ date: -1, createdAt: -1 })
+                        .skip(skip)
+                        .limit(limit)
+                        .toArray();
+                    transactions = list.map(item => ({ ...item, type: 'expense' }));
+                } else {
+                    const filterIncome = buildFilter(true);
+                    const filterExpense = buildFilter(false);
+
+                    const facetPipeline = [
+                        { $match: filterIncome },
+                        { $addFields: { type: "income" } },
+                        {
+                            $unionWith: {
+                                coll: "finance_expenses",
+                                pipeline: [
+                                    { $match: filterExpense },
+                                    { $addFields: { type: "expense" } }
+                                ]
+                            }
+                        },
+                        { $sort: { date: -1, createdAt: -1 } },
+                        {
+                            $facet: {
+                                metadata: [{ $count: "total" }],
+                                data: [{ $skip: skip }, { $limit: limit }]
+                            }
+                        }
+                    ];
+
+                    const result = await financeIncomesCollection.aggregate(facetPipeline).toArray();
+                    transactions = result[0]?.data || [];
+                    totalCount = result[0]?.metadata[0]?.total || 0;
+                }
+
+                res.status(200).json({
+                    success: true,
+                    page,
+                    limit,
+                    totalCount,
+                    totalPages: Math.ceil(totalCount / limit),
+                    data: transactions
+                });
+            } catch (error) {
+                console.error("Transactions query error:", error);
+                res.status(500).json({ success: false, message: "সার্ভার থেকে লেনদেনের তালিকা আনতে সমস্যা হয়েছে।" });
             }
         });
 
