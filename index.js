@@ -1135,7 +1135,7 @@ async function run() {
 
         // মূল রুট
         app.get('/', (req, res) => {
-            res.send('As-Salam Madrasah Server is Running!');
+            res.send('As-Salam Ideal Madrasah  (AIM) Server is Running!');
         });
 
         console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
