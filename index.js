@@ -41,6 +41,75 @@ async function run() {
         const financeIncomesCollection = database.collection("finance_incomes");
         const financeExpensesCollection = database.collection("finance_expenses");
 
+
+        /**
+ * ৭. এডমিট কার্ড ডাটা পাওয়ার API
+ * Endpoint: GET /api/admit-card/:studentId
+ */
+app.get('/api/admit-card/:studentId', async (req, res) => {
+    try {
+        const { studentId } = req.params;
+        const examName = req.query.examName || "প্রথম সাময়িক পরীক্ষা";
+        const sessionYear = req.query.sessionYear || "২০২৬-২০২৭ইঃ/১৪৪৭-১৪৪৮ হিজরী";
+
+        // শিক্ষার্থী খোঁজা (studentId অথবা _id দিয়ে)
+        const query = ObjectId.isValid(studentId)
+            ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
+            : { studentId: studentId };
+
+        const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
+
+        if (!student) {
+            return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+        }
+
+        const studentClass = student.divisionAcademy?.class 
+            || student.divisionHifz?.class 
+            || student.divisionPreHifz?.class 
+            || student.class 
+            || student.className 
+            || "N/A";
+
+        // পরীক্ষার রুটিন ডায়নামিকভাবে সেট সেটিংস/কালেকশন থেকে আনা বা ডিফল্ট ডাটা
+        const defaultRoutine = [
+            { date: "০৫/০৫/২০২৬", day: "মঙ্গলবার", subject: "আরবি" },
+            { date: "০৭/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "ইংরেজি" },
+            { date: "১১/০৫/২০২৬", day: "সোমবার", subject: "গণিত" },
+            { date: "১৩/০৫/২০২৬", day: "বুধবার", subject: "বাংলা" },
+            { date: "১৬/০৫/২০২৬", day: "শনিবার", subject: "আকিদাহ" },
+            { date: "১৮/০৫/২০২৬", day: "সোমবার", subject: "কুরআন-১" },
+            { date: "২১/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "সাধারণ জ্ঞান" }
+        ];
+
+        res.status(200).json({
+            success: true,
+            data: {
+                student: {
+                    nameBangla: student.studentNameBangla || student.name || "N/A",
+                    fatherName: student.fatherNameBangla || student.fatherName || "N/A",
+                    upazila: student.upazila || student.presentAddress?.upazila || "হবিগঞ্জ সদর",
+                    district: student.district || student.presentAddress?.district || "হবিগঞ্জ",
+                    id: student.studentId || "N/A",
+                    roll: student.officeUse?.rollNumber || student.roll || "N/A",
+                    class: studentClass,
+                    hallNo: student.hallNo || "১",
+                    seatNo: student.seatNo || "১",
+                    photoUrl: student.photoUrl || student.imageUrl || "https://via.placeholder.com/150"
+                },
+                examInfo: {
+                    examName,
+                    sessionYear,
+                    examTime: "সকাল ৯:০০ থেকে ১১:৩০ মিনিট পর্যন্ত"
+                },
+                routine: defaultRoutine
+            }
+        });
+
+    } catch (error) {
+        console.error("Admit Card Fetch Error:", error);
+        res.status(500).json({ success: false, message: "এডমিট কার্ডের তথ্য আনতে সমস্যা হয়েছে।" });
+    }
+});
         // ==========================================
         // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
         // ==========================================
