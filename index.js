@@ -1202,6 +1202,343 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
             }
         });
 
+        // ==========================================
+        // স্টুডেন্ট পোর্টাল ও পরীক্ষার সেটিং সংক্রান্ত APIs (Task 1 & 2)
+        // ==========================================
+        const examsCollection = database.collection("exams");
+        const feesCollection = database.collection("fees");
+        const seatPlansCollection = database.collection("seat_plans");
+
+        // ডাটাবেজে মক ডাটা সিড (যদি পূর্বে সিড করা না থাকে)
+        (async () => {
+            try {
+                const examsCount = await examsCollection.countDocuments();
+                if (examsCount === 0) {
+                    await examsCollection.insertMany([
+                        {
+                            class: "দশম",
+                            className: "দশম",
+                            batch: "২০২৬-২০২৭",
+                            sessionYear: "২০২৬-২০২৭",
+                            isAdmitPublished: true,
+                            routine: [
+                                { subject: "বাংলা ১ম", date: "২০২৬-০৮-১০", time: "১০:০০ AM - ০১:০০ PM", room: "২০১" },
+                                { subject: "ইংরেজি ১ম", date: "২০২৬-০৮-১২", time: "১০:০০ AM - ০১:০০ PM", room: "২০১" },
+                                { subject: "গণিত", date: "২০২৬-০৮-১৪", time: "১০:০০ AM - ০১:০০ PM", room: "২০২" },
+                                { subject: "পদার্থবিজ্ঞান", date: "২০২৬-০৮-১৬", time: "১০:০০ AM - ০১:০০ PM", room: "২০৩" }
+                            ]
+                        },
+                        {
+                            class: "নবম",
+                            className: "নবম",
+                            batch: "২০২৬-২০২৭",
+                            sessionYear: "২০২৬-২০২৭",
+                            isAdmitPublished: true,
+                            routine: [
+                                { subject: "বাংলা ১ম", date: "২০২৬-০৮-১০", time: "১০:০০ AM - ০১:০০ PM", room: "১০১" },
+                                { subject: "ইংরেজি ১ম", date: "২০২৬-০৮-১২", time: "১০:০০ AM - ০১:০০ PM", room: "১০১" },
+                                { subject: "গণিত", date: "২০২৬-০৮-১৪", time: "১০:০০ AM - ০১:০০ PM", room: "১০২" }
+                            ]
+                        }
+                    ]);
+                }
+
+                const existingStudents = await studentsCollection.find({}).limit(5).toArray();
+                const feesCount = await feesCollection.countDocuments();
+                const seatPlansCount = await seatPlansCollection.countDocuments();
+
+                if (existingStudents.length > 0) {
+                    if (feesCount === 0) {
+                        const feesToInsert = existingStudents.map((s, idx) => ({
+                            studentId: s.studentId || String(s._id),
+                            status: idx % 2 === 0 ? "PAID" : "UNPAID",
+                            amount: 1500,
+                            transactionId: idx % 2 === 0 ? `TXN${Date.now()}${idx}` : undefined,
+                            paymentMethod: idx % 2 === 0 ? "bKash" : undefined,
+                            paidAt: idx % 2 === 0 ? new Date() : undefined
+                        }));
+                        await feesCollection.insertMany(feesToInsert);
+                    }
+                    if (seatPlansCount === 0) {
+                        const seatsToInsert = existingStudents.map((s, idx) => ({
+                            studentId: s.studentId || String(s._id),
+                            building: idx % 2 === 0 ? "প্রধান ভবন" : "নতুন ভবন",
+                            room: String(201 + idx),
+                            seatNo: `A-${idx + 10}`,
+                            roll: s.officeUse?.rollNumber || s.roll || String(idx + 1)
+                        }));
+                        await seatPlansCollection.insertMany(seatsToInsert);
+                    }
+                } else {
+                    if (feesCount === 0) {
+                        await feesCollection.insertMany([
+                            { studentId: "04337", status: "PAID", amount: 1500, transactionId: "TXN123456789", paymentMethod: "bKash", paidAt: new Date() },
+                            { studentId: "04338", status: "UNPAID", amount: 1500 }
+                        ]);
+                    }
+                    if (seatPlansCount === 0) {
+                        await seatPlansCollection.insertMany([
+                            { studentId: "04337", building: "প্রধান ভবন", room: "২০১", seatNo: "A-12", roll: "১০" },
+                            { studentId: "04338", building: "নতুন ভবন", room: "১০২", seatNo: "B-05", roll: "১১" }
+                        ]);
+                    }
+                }
+            } catch (err) {
+                console.error("Error seeding mock data:", err);
+            }
+        })();
+
+        // ১. GET /api/student/routine -> রুটিন ডাটা ফেচ করা
+        app.get('/api/student/routine', async (req, res) => {
+            try {
+                const { studentId, class: reqClass, batch } = req.query;
+                let studentClass = reqClass;
+                let studentBatch = batch;
+
+                if (studentId) {
+                    const query = ObjectId.isValid(studentId)
+                        ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
+                        : { studentId: studentId };
+                    const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
+                    if (student) {
+                        studentClass = student.divisionAcademy?.class || student.divisionHifz?.class || student.divisionPreHifz?.class || student.class || student.className;
+                        studentBatch = student.batch || student.sessionYear;
+                    }
+                }
+
+                const filter = {};
+                if (studentClass) {
+                    filter.$or = [
+                        { class: studentClass },
+                        { className: studentClass },
+                        { class: { $regex: new RegExp(`^${studentClass}$`, 'i') } }
+                    ];
+                }
+                if (studentBatch) {
+                    if (!filter.$or) filter.$or = [];
+                    filter.$or.push({ batch: studentBatch });
+                    filter.$or.push({ sessionYear: studentBatch });
+                }
+                if (studentId) {
+                    if (!filter.$or) filter.$or = [];
+                    filter.$or.push({ studentId: studentId });
+                }
+
+                const searchFilter = filter.$or && filter.$or.length > 0 ? filter : {};
+                const exams = await examsCollection.find(searchFilter).toArray();
+                
+                res.status(200).json({ success: true, data: exams });
+            } catch (error) {
+                console.error("Routine fetch error:", error);
+                res.status(500).json({ success: false, message: "রুটিন লোড করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ২. GET /api/student/fees -> ফি এর তথ্য আনা
+        app.get('/api/student/fees', async (req, res) => {
+            try {
+                const { studentId } = req.query;
+                if (!studentId) {
+                    return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
+                }
+                
+                const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
+                if (ObjectId.isValid(studentId)) {
+                    query.$or.push({ _id: new ObjectId(studentId) });
+                }
+                
+                const feeRecord = await feesCollection.findOne(query);
+                if (feeRecord) {
+                    res.status(200).json({ success: true, data: feeRecord });
+                } else {
+                    res.status(200).json({ 
+                        success: true, 
+                        data: {
+                            studentId,
+                            status: 'UNPAID',
+                            amount: 1500,
+                            message: "কোনো পেমেন্ট রেকর্ড খুঁজে পাওয়া যায়নি।"
+                        } 
+                    });
+                }
+            } catch (error) {
+                console.error("Fees fetch error:", error);
+                res.status(500).json({ success: false, message: "ফি এর তথ্য লোড করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৩. POST /api/student/pay-fee -> ফি পেমেন্ট করা (সিমুলেশন)
+        app.post('/api/student/pay-fee', async (req, res) => {
+            try {
+                const { studentId, paymentMethod } = req.body;
+                if (!studentId) {
+                    return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
+                }
+
+                const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
+                if (ObjectId.isValid(studentId)) {
+                    query.$or.push({ _id: new ObjectId(studentId) });
+                }
+
+                const transactionId = "TXN" + Math.random().toString(36).substring(2, 11).toUpperCase();
+                
+                await feesCollection.updateOne(
+                    query,
+                    {
+                        $set: {
+                            status: 'PAID',
+                            transactionId,
+                            paymentMethod: paymentMethod || 'bKash',
+                            paidAt: new Date()
+                        }
+                    },
+                    { upsert: true }
+                );
+
+                res.status(200).json({
+                    success: true,
+                    message: "ফি সফলভাবে পরিশোধ করা হয়েছে।",
+                    transactionId
+                });
+            } catch (error) {
+                console.error("Pay fee error:", error);
+                res.status(500).json({ success: false, message: "ফি পরিশোধ করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৪. GET /api/student/seat-plan -> সীট প্ল্যান আনা
+        app.get('/api/student/seat-plan', async (req, res) => {
+            try {
+                const { studentId } = req.query;
+                if (!studentId) {
+                    return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
+                }
+                
+                const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
+                if (ObjectId.isValid(studentId)) {
+                    query.$or.push({ _id: new ObjectId(studentId) });
+                }
+                const seatPlan = await seatPlansCollection.findOne(query);
+                
+                res.status(200).json({ success: true, data: seatPlan });
+            } catch (error) {
+                console.error("Seat plan fetch error:", error);
+                res.status(500).json({ success: false, message: "সীট প্ল্যান লোড করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৫. GET /api/student/admit-card -> প্রবেশপত্র অনুমোদন চেক ও ডাটা প্রদান
+        app.get('/api/student/admit-card', async (req, res) => {
+            try {
+                const { studentId } = req.query;
+                if (!studentId) {
+                    return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
+                }
+
+                const studentQuery = ObjectId.isValid(studentId)
+                    ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
+                    : { studentId: studentId };
+                const studentData = await studentsCollection.findOne(studentQuery) || await admissionCollection.findOne(studentQuery);
+
+                if (!studentData) {
+                    return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+                }
+
+                const targetStudentId = studentData.studentId || String(studentData._id);
+
+                const feeQuery = { $or: [{ studentId: targetStudentId }, { studentId: String(targetStudentId) }] };
+                if (ObjectId.isValid(studentId)) {
+                    feeQuery.$or.push({ _id: new ObjectId(studentId) });
+                }
+                const feeRecord = await feesCollection.findOne(feeQuery);
+                const isPaid = feeRecord?.status === 'PAID';
+
+                const studentClass = studentData.divisionAcademy?.class || studentData.divisionHifz?.class || studentData.divisionPreHifz?.class || studentData.class || studentData.className || "N/A";
+                const studentBatch = studentData.batch || studentData.sessionYear || "২০২৬-২০২৭";
+
+                const examRecord = await examsCollection.findOne({ 
+                    $or: [
+                        { class: studentClass },
+                        { className: studentClass },
+                        { batch: studentBatch },
+                        { sessionYear: studentBatch }
+                    ],
+                    isAdmitPublished: true
+                }) || await examsCollection.findOne({ isAdmitPublished: true });
+
+                const isAdmitPublished = examRecord ? (examRecord.isAdmitPublished === true) : false;
+
+                const formattedStudent = {
+                    studentId: targetStudentId,
+                    studentNameBangla: studentData.studentNameBangla || studentData.studentName || studentData.name || "N/A",
+                    studentNameEnglish: studentData.studentNameEnglish || studentData.name || "N/A",
+                    fatherNameBangla: studentData.fatherNameBangla || studentData.fatherName || "N/A",
+                    roll: studentData.officeUse?.rollNumber || studentData.roll || "N/A",
+                    class: studentClass,
+                    sessionYear: studentBatch,
+                    photoUrl: studentData.photoUrl || "",
+                    hallNo: studentData.hallNo || "১০২",
+                    seatNo: studentData.seatNo || "১২",
+                    currentAddress: studentData.currentAddress || studentData.presentAddress || {},
+                    permanentAddress: studentData.permanentAddress || {}
+                };
+
+                // Add seat plan details to formattedStudent if available
+                const seatPlan = await seatPlansCollection.findOne({ $or: [{ studentId: targetStudentId }, { studentId: String(targetStudentId) }] });
+                if (seatPlan) {
+                    formattedStudent.hallNo = seatPlan.room || formattedStudent.hallNo;
+                    formattedStudent.seatNo = seatPlan.seatNo || formattedStudent.seatNo;
+                    formattedStudent.building = seatPlan.building || "প্রধান ভবন";
+                    formattedStudent.roll = seatPlan.roll || formattedStudent.roll;
+                }
+
+                res.status(200).json({
+                    success: true,
+                    isPaid,
+                    isAdmitPublished,
+                    studentData: formattedStudent
+                });
+            } catch (error) {
+                console.error("Admit card condition check error:", error);
+                res.status(500).json({ success: false, message: "প্রবেশপত্র পরীক্ষা করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৬. GET /api/student/info -> স্টুডেন্ট তথ্য খোঁজা (ইমেইল বা আইডি দিয়ে)
+        app.get('/api/student/info', async (req, res) => {
+            try {
+                const { email, studentId } = req.query;
+                let query = {};
+                if (studentId) {
+                    query = ObjectId.isValid(studentId)
+                        ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
+                        : { studentId: studentId };
+                } else if (email) {
+                    query = { 
+                        $or: [
+                            { email: email },
+                            { "officeUse.email": email },
+                            { studentEmail: email },
+                            { "studentEmail": email },
+                            { "fatherInfo.email": email }
+                        ]
+                    };
+                } else {
+                    return res.status(400).json({ success: false, message: "ইমেইল বা স্টুডেন্ট আইডি প্রয়োজন।" });
+                }
+
+                const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
+                if (student) {
+                    res.status(200).json({ success: true, data: student });
+                } else {
+                    res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+                }
+            } catch (error) {
+                console.error("Student info error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+            }
+        });
+
         // মূল রুট
         app.get('/', (req, res) => {
             res.send('As-Salam Ideal Madrasah  (AIM) Server is Running!');
