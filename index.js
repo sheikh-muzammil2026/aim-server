@@ -46,70 +46,70 @@ async function run() {
  * ৭. এডমিট কার্ড ডাটা পাওয়ার API
  * Endpoint: GET /api/admit-card/:studentId
  */
-app.get('/api/admit-card/:studentId', async (req, res) => {
-    try {
-        const { studentId } = req.params;
-        const examName = req.query.examName || "প্রথম সাময়িক পরীক্ষা";
-        const sessionYear = req.query.sessionYear || "২০২৬-২০২৭ইঃ/১৪৪৭-১৪৪৮ হিজরী";
+        app.get('/api/admit-card/:studentId', async (req, res) => {
+            try {
+                const { studentId } = req.params;
+                const examName = req.query.examName || "প্রথম সাময়িক পরীক্ষা";
+                const sessionYear = req.query.sessionYear || "২০২৬-২০২৭ইঃ/১৪৪৭-১৪৪৮ হিজরী";
 
-        // শিক্ষার্থী খোঁজা (studentId অথবা _id দিয়ে)
-        const query = ObjectId.isValid(studentId)
-            ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
-            : { studentId: studentId };
+                // শিক্ষার্থী খোঁজা (studentId অথবা _id দিয়ে)
+                const query = ObjectId.isValid(studentId)
+                    ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
+                    : { studentId: studentId };
 
-        const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
+                const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
 
-        if (!student) {
-            return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
-        }
+                if (!student) {
+                    return res.status(404).json({ success: false, message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।" });
+                }
 
-        const studentClass = student.divisionAcademy?.class 
-            || student.divisionHifz?.class 
-            || student.divisionPreHifz?.class 
-            || student.class 
-            || student.className 
-            || "N/A";
+                const studentClass = student.divisionAcademy?.class
+                    || student.divisionHifz?.class
+                    || student.divisionPreHifz?.class
+                    || student.class
+                    || student.className
+                    || "N/A";
 
-        // পরীক্ষার রুটিন ডায়নামিকভাবে সেট সেটিংস/কালেকশন থেকে আনা বা ডিফল্ট ডাটা
-        const defaultRoutine = [
-            { date: "০৫/০৫/২০২৬", day: "মঙ্গলবার", subject: "আরবি" },
-            { date: "০৭/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "ইংরেজি" },
-            { date: "১১/০৫/২০২৬", day: "সোমবার", subject: "গণিত" },
-            { date: "১৩/০৫/২০২৬", day: "বুধবার", subject: "বাংলা" },
-            { date: "১৬/০৫/২০২৬", day: "শনিবার", subject: "আকিদাহ" },
-            { date: "১৮/০৫/২০২৬", day: "সোমবার", subject: "কুরআন-১" },
-            { date: "২১/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "সাধারণ জ্ঞান" }
-        ];
+                // পরীক্ষার রুটিন ডায়নামিকভাবে সেট সেটিংস/কালেকশন থেকে আনা বা ডিফল্ট ডাটা
+                const defaultRoutine = [
+                    { date: "০৫/০৫/২০২৬", day: "মঙ্গলবার", subject: "আরবি" },
+                    { date: "০৭/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "ইংরেজি" },
+                    { date: "১১/০৫/২০২৬", day: "সোমবার", subject: "গণিত" },
+                    { date: "১৩/০৫/২০২৬", day: "বুধবার", subject: "বাংলা" },
+                    { date: "১৬/০৫/২০২৬", day: "শনিবার", subject: "আকিদাহ" },
+                    { date: "১৮/০৫/২০২৬", day: "সোমবার", subject: "কুরআন-১" },
+                    { date: "২১/০৫/২০২৬", day: "বৃহস্পতিবার", subject: "সাধারণ জ্ঞান" }
+                ];
 
-        res.status(200).json({
-            success: true,
-            data: {
-                student: {
-                    nameBangla: student.studentNameBangla || student.name || "N/A",
-                    fatherName: student.fatherNameBangla || student.fatherName || "N/A",
-                    upazila: student.upazila || student.presentAddress?.upazila || "হবিগঞ্জ সদর",
-                    district: student.district || student.presentAddress?.district || "হবিগঞ্জ",
-                    id: student.studentId || "N/A",
-                    roll: student.officeUse?.rollNumber || student.roll || "N/A",
-                    class: studentClass,
-                    hallNo: student.hallNo || "১",
-                    seatNo: student.seatNo || "১",
-                    photoUrl: student.photoUrl || student.imageUrl || "https://via.placeholder.com/150"
-                },
-                examInfo: {
-                    examName,
-                    sessionYear,
-                    examTime: "সকাল ৯:০০ থেকে ১১:৩০ মিনিট পর্যন্ত"
-                },
-                routine: defaultRoutine
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        student: {
+                            nameBangla: student.studentNameBangla || student.name || "N/A",
+                            fatherName: student.fatherNameBangla || student.fatherName || "N/A",
+                            upazila: student.upazila || student.presentAddress?.upazila || "হবিগঞ্জ সদর",
+                            district: student.district || student.presentAddress?.district || "হবিগঞ্জ",
+                            id: student.studentId || "N/A",
+                            roll: student.officeUse?.rollNumber || student.roll || "N/A",
+                            class: studentClass,
+                            hallNo: student.hallNo || "১",
+                            seatNo: student.seatNo || "১",
+                            photoUrl: student.photoUrl || student.imageUrl || "https://via.placeholder.com/150"
+                        },
+                        examInfo: {
+                            examName,
+                            sessionYear,
+                            examTime: "সকাল ৯:০০ থেকে ১১:৩০ মিনিট পর্যন্ত"
+                        },
+                        routine: defaultRoutine
+                    }
+                });
+
+            } catch (error) {
+                console.error("Admit Card Fetch Error:", error);
+                res.status(500).json({ success: false, message: "এডমিট কার্ডের তথ্য আনতে সমস্যা হয়েছে।" });
             }
         });
-
-    } catch (error) {
-        console.error("Admit Card Fetch Error:", error);
-        res.status(500).json({ success: false, message: "এডমিট কার্ডের তথ্য আনতে সমস্যা হয়েছে।" });
-    }
-});
         // ==========================================
         // ৫. মার্কস ও রিজাল্ট সংক্রান্ত APIs
         // ==========================================
@@ -1107,7 +1107,7 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
 
                 const buildFilter = (isIncome) => {
                     const filter = {};
-                    
+
                     if (search) {
                         const regex = { $regex: search, $options: 'i' };
                         if (isIncome) {
@@ -1288,49 +1288,112 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
             }
         })();
 
-        // ১. GET /api/student/routine -> রুটিন ডাটা ফেচ করা
-        app.get('/api/student/routine', async (req, res) => {
-            try {
-                const { studentId, class: reqClass, batch } = req.query;
-                let studentClass = reqClass;
-                let studentBatch = batch;
 
+        // ১. GET /api/student/routine -> শিক্ষার্থীদের জন্য রুটিন ডাটা ফেচ করা
+        app.get('/api/admin/routine', async (req, res) => {
+            try {
+                const { studentId, class: reqClass, academyType, section } = req.query;
+
+                let studentClass = reqClass;
+                let studentAcademyType = academyType;
+                let studentSection = section;
+
+                // যদি studentId দিয়ে রিকোয়েস্ট আসে, তবে স্টুডেন্ট প্রোফাইল থেকে বিস্তারিত বের করে নেওয়া
                 if (studentId) {
                     const query = ObjectId.isValid(studentId)
                         ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
                         : { studentId: studentId };
-                    const student = await studentsCollection.findOne(query) || await admissionCollection.findOne(query);
+
+                    const student = (await studentsCollection.findOne(query)) || (await admissionCollection.findOne(query));
+
                     if (student) {
-                        studentClass = student.divisionAcademy?.class || student.divisionHifz?.class || student.divisionPreHifz?.class || student.class || student.className;
-                        studentBatch = student.batch || student.sessionYear;
+                        // স্টুডেন্টের শ্রেণি, বিভাগ এবং সেকশন সংগ্রহ
+                        studentClass =
+                            student.divisionAcademy?.class ||
+                            student.divisionHifz?.class ||
+                            student.divisionPreHifz?.class ||
+                            student.class ||
+                            student.className;
+
+                        studentAcademyType = student.academyType || student.division;
+                        studentSection = student.section || student.branch;
                     }
                 }
 
-                const filter = {};
+                // রুটিন খোঁজার ফিল্টার কোয়েরি
+                const queryFilter = {};
+
+                // ১. যদি নির্দিষ্ট শ্রেণি থাকে, তবে routineData অ্যারের ভেতরে 'class' অথবা 'jamaat' এর সাথে ম্যাচ করানো
                 if (studentClass) {
-                    filter.$or = [
-                        { class: studentClass },
-                        { className: studentClass },
-                        { class: { $regex: new RegExp(`^${studentClass}$`, 'i') } }
-                    ];
-                }
-                if (studentBatch) {
-                    if (!filter.$or) filter.$or = [];
-                    filter.$or.push({ batch: studentBatch });
-                    filter.$or.push({ sessionYear: studentBatch });
-                }
-                if (studentId) {
-                    if (!filter.$or) filter.$or = [];
-                    filter.$or.push({ studentId: studentId });
+                    queryFilter['routineData'] = {
+                        $elemMatch: {
+                            $or: [
+                                { class: studentClass },
+                                { jamaat: studentClass },
+                                { class: { $regex: new RegExp(`^${studentClass}$`, 'i') } }
+                            ]
+                        }
+                    };
                 }
 
-                const searchFilter = filter.$or && filter.$or.length > 0 ? filter : {};
-                const exams = await examsCollection.find(searchFilter).toArray();
-                
-                res.status(200).json({ success: true, data: exams });
+                // ২. বিভাগ (Academy Type) ফিল্টার (যদি থাকে)
+                if (studentAcademyType) {
+                    queryFilter.$or = [
+                        { academyType: studentAcademyType },
+                        { academyType: { $exists: false } }, // সকল বিভাগের জন্য উন্মুক্ত রুটিন
+                        { academyType: "" }
+                    ];
+                }
+
+                // ৩. সেকশন/শাখা ফিল্টার (যদি থাকে)
+                if (studentSection) {
+                    const sectionFilter = [
+                        { section: studentSection },
+                        { section: { $exists: false } },
+                        { section: "" }
+                    ];
+
+                    if (queryFilter.$or) {
+                        queryFilter.$and = [
+                            { $or: queryFilter.$or },
+                            { $or: sectionFilter }
+                        ];
+                        delete queryFilter.$or;
+                    } else {
+                        queryFilter.$or = sectionFilter;
+                    }
+                }
+
+                // ডাটাবেজ থেকে রুটিন ফেচ করা (সর্বশেষ রুটিন আগে দেখাবে)
+                const routines = await examsCollection.find(queryFilter).sort({ _id: -1 }).toArray();
+
+                // যদি স্টুডেন্ট ক্লাসের ফিল্টার থাকে, তবে শুধু ঐ স্টুডেন্টের ক্লাসের ডাটা রেখে রেসপন্স ফিল্টার করা (Optional Client Optimization)
+                const formattedRoutines = routines.map((routine) => {
+                    if (!studentClass || !routine.routineData) return routine;
+
+                    // শুধু মাত্র উক্ত শিক্ষার্থীর জামাত/ক্লাসের সারিটুকু ফিল্টার করে পাঠানো
+                    const studentClassData = routine.routineData.filter(
+                        (item) =>
+                            item.class?.toLowerCase() === studentClass.toLowerCase() ||
+                            item.jamaat?.toLowerCase() === studentClass.toLowerCase()
+                    );
+
+                    return {
+                        ...routine,
+                        routineData: studentClassData.length > 0 ? studentClassData : routine.routineData
+                    };
+                });
+
+                res.status(200).json({
+                    success: true,
+                    data: formattedRoutines
+                });
             } catch (error) {
                 console.error("Routine fetch error:", error);
-                res.status(500).json({ success: false, message: "রুটিন লোড করতে সমস্যা হয়েছে।" });
+                res.status(500).json({
+                    success: false,
+                    message: "রুটিন লোড করতে সমস্যা হয়েছে।"
+                });
             }
         });
 
@@ -1341,24 +1404,24 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
                 if (!studentId) {
                     return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
                 }
-                
+
                 const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
                 if (ObjectId.isValid(studentId)) {
                     query.$or.push({ _id: new ObjectId(studentId) });
                 }
-                
+
                 const feeRecord = await feesCollection.findOne(query);
                 if (feeRecord) {
                     res.status(200).json({ success: true, data: feeRecord });
                 } else {
-                    res.status(200).json({ 
-                        success: true, 
+                    res.status(200).json({
+                        success: true,
                         data: {
                             studentId,
                             status: 'UNPAID',
                             amount: 1500,
                             message: "কোনো পেমেন্ট রেকর্ড খুঁজে পাওয়া যায়নি।"
-                        } 
+                        }
                     });
                 }
             } catch (error) {
@@ -1381,7 +1444,7 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
                 }
 
                 const transactionId = "TXN" + Math.random().toString(36).substring(2, 11).toUpperCase();
-                
+
                 await feesCollection.updateOne(
                     query,
                     {
@@ -1413,13 +1476,13 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
                 if (!studentId) {
                     return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
                 }
-                
+
                 const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
                 if (ObjectId.isValid(studentId)) {
                     query.$or.push({ _id: new ObjectId(studentId) });
                 }
                 const seatPlan = await seatPlansCollection.findOne(query);
-                
+
                 res.status(200).json({ success: true, data: seatPlan });
             } catch (error) {
                 console.error("Seat plan fetch error:", error);
@@ -1456,7 +1519,7 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
                 const studentClass = studentData.divisionAcademy?.class || studentData.divisionHifz?.class || studentData.divisionPreHifz?.class || studentData.class || studentData.className || "N/A";
                 const studentBatch = studentData.batch || studentData.sessionYear || "২০২৬-২০২৭";
 
-                const examRecord = await examsCollection.findOne({ 
+                const examRecord = await examsCollection.findOne({
                     $or: [
                         { class: studentClass },
                         { className: studentClass },
@@ -1514,7 +1577,7 @@ app.get('/api/admit-card/:studentId', async (req, res) => {
                         ? { $or: [{ _id: new ObjectId(studentId) }, { studentId: studentId }] }
                         : { studentId: studentId };
                 } else if (email) {
-                    query = { 
+                    query = {
                         $or: [
                             { email: email },
                             { "officeUse.email": email },
