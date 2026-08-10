@@ -38,7 +38,10 @@ async function run() {
         const feeStructuresCollection = database.collection("fee_structures");
         const receiptsCollection = database.collection("finance_receipts");
         const marksCollection = database.collection("marks");
+        const examsCollection = database.collection("exams");
+        const feesCollection = database.collection("fees");
         const routinesCollection = database.collection("routine")
+        const seatPlansCollection = database.collection("seat_plan")
         const financeIncomesCollection = database.collection("finance_incomes");
         const financeExpensesCollection = database.collection("finance_expenses");
 
@@ -1299,9 +1302,7 @@ async function run() {
         // ==========================================
         // স্টুডেন্ট পোর্টাল ও পরীক্ষার সেটিং সংক্রান্ত APIs (Task 1 & 2)
         // ==========================================
-        const examsCollection = database.collection("exams");
-        const feesCollection = database.collection("fees");
-        const seatPlansCollection = database.collection("seat_plans");
+
 
         // ডাটাবেজে মক ডাটা সিড (যদি পূর্বে সিড করা না থাকে)
         (async () => {
@@ -1563,24 +1564,85 @@ async function run() {
             }
         });
 
-        // ৪. GET /api/student/seat-plan -> সীট প্ল্যান আনা
-        app.get('/api/student/seat-plan', async (req, res) => {
+        //  seat plan 
+
+        app.patch('/api/students/:id/seat-plan', async (req, res) => {
             try {
-                const { studentId } = req.query;
-                if (!studentId) {
-                    return res.status(400).json({ success: false, message: "স্টুডেন্ট আইডি প্রয়োজন।" });
+                const { id } = req.params;
+                const { hallNo, seatNo } = req.body;
+
+                if (!id) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "স্টুডেন্ট আইডি প্রয়োজন।"
+                    });
                 }
 
-                const query = { $or: [{ studentId: studentId }, { studentId: String(studentId) }] };
-                if (ObjectId.isValid(studentId)) {
-                    query.$or.push({ _id: new ObjectId(studentId) });
-                }
-                const seatPlan = await seatPlansCollection.findOne(query);
+                // আইডি দিয়ে কুয়েরি অবজেক্ট তৈরি
+                const studentQuery = ObjectId.isValid(id)
+                    ? { $or: [{ _id: new ObjectId(id) }, { studentId: id }] }
+                    : { studentId: id };
 
-                res.status(200).json({ success: true, data: seatPlan });
+                // ১. শিক্ষার্থীরা যে কোনো একটি কালেকশনে থাকতে পারে (studentsCollection অথবা admissionCollection)
+                let studentData = await studentsCollection.findOne(studentQuery);
+                let targetCollection = studentsCollection;
+
+                if (!studentData) {
+                    studentData = await admissionCollection.findOne(studentQuery);
+                    targetCollection = admissionCollection;
+                }
+
+                if (!studentData) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "শিক্ষার্থী খুঁজে পাওয়া যায়নি।"
+                    });
+                }
+
+                const targetStudentId = studentData.studentId || String(studentData._id);
+
+                // ২. মূল স্টুডেন্ট/এডমিশন ডকুমেন্ট আপডেট করা (hallNo ও seatNo সরাসরি ডকুমেন্টে যুক্ত বা আপডেট হবে)
+                const updateDoc = {
+                    $set: {
+                        hallNo: hallNo || "",
+                        seatNo: seatNo || "",
+                        updatedAt: new Date()
+                    }
+                };
+
+                await targetCollection.updateOne(studentQuery, updateDoc);
+
+                // ৩. seatPlansCollection কালেকশনেও ডাটা Upsert (Update or Insert) করা (যদি আলাদা seatPlansCollection ব্যবহার করেন)
+                if (typeof seatPlansCollection !== 'undefined') {
+                    const seatPlanQuery = {
+                        $or: [{ studentId: targetStudentId }, { studentId: String(targetStudentId) }]
+                    };
+
+                    await seatPlansCollection.updateOne(
+                        seatPlanQuery,
+                        {
+                            $set: {
+                                studentId: targetStudentId,
+                                room: hallNo || "",
+                                seatNo: seatNo || "",
+                                updatedAt: new Date()
+                            }
+                        },
+                        { upsert: true } // না থাকলে নতুন তৈরি করবে, থাকলে আপডেট করবে
+                    );
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    message: "সিট প্ল্যান সফলভাবে আপডেট করা হয়েছে!"
+                });
+
             } catch (error) {
-                console.error("Seat plan fetch error:", error);
-                res.status(500).json({ success: false, message: "সীট প্ল্যান লোড করতে সমস্যা হয়েছে।" });
+                console.error("Error updating seat plan:", error);
+                return res.status(500).json({
+                    success: false,
+                    message: "সার্ভার এরর! সিট প্ল্যান সেভ করা যায়নি।"
+                });
             }
         });
 
@@ -1693,6 +1755,62 @@ async function run() {
             } catch (error) {
                 console.error("Student info error:", error);
                 res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ==========================================
+        // এক ক্লিকে শিক্ষার্থীদের sessionYear ফরম্যাট ঠিক করার API (Option 1)
+        // Endpoint: PATCH /api/admin/fix-session-years
+        // ==========================================
+        app.patch('/api/admin/fix-session-years', async (req, res) => {
+            try {
+                // ১. যেসব ডকুমেন্টে sessionYear আছে সেগুলো নেওয়া
+                const students = await studentsCollection.find({ sessionYear: { $exists: true, $ne: "" } }).toArray();
+
+                if (students.length === 0) {
+                    return res.status(200).json({
+                        success: true,
+                        message: "আপডেট করার মতো কোনো শিক্ষার্থী পাওয়া যায়নি।"
+                    });
+                }
+
+                // ২. Bulk operation তৈরি করা
+                const bulkOps = students.map((student) => {
+                    const rawSession = String(student.sessionYear);
+
+                    // Regex দিয়ে প্রথম ৪ সংখ্যার বছরটি বের করা (যেমন: "২০২৬-২০২৭" বা "2026-2027" থেকে প্রথম অংশ)
+                    // যদি "-" থাকে তবে তার আগের অংশটুকু নেওয়া হবে
+                    const shortYear = rawSession.split('-')[0].split('ই')[0].trim();
+
+                    return {
+                        updateOne: {
+                            filter: { _id: student._id },
+                            update: {
+                                $set: {
+                                    sessionYear: shortYear,
+                                    updatedAt: new Date()
+                                }
+                            }
+                        }
+                    };
+                });
+
+                // ৩. MongoDB-তে একবারে bulkWrite দিয়ে আপডেট করা
+                const result = await studentsCollection.bulkWrite(bulkOps);
+
+                res.status(200).json({
+                    success: true,
+                    message: `মোট ${result.modifiedCount} জন শিক্ষার্থীর sessionYear সফলভাবে আপডেট করা হয়েছে।`,
+                    data: result
+                });
+
+            } catch (error) {
+                console.error("Session year update error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "sessionYear আপডেট করতে সমস্যা হয়েছে।",
+                    error: error.message
+                });
             }
         });
 
