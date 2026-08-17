@@ -151,55 +151,111 @@ async function run() {
      */
         app.get('/api/students', async (req, res) => {
             try {
-                const { class: className, status, search } = req.query;
+                const {
+                    class: className,
+                    status,
+                    search,
+                    sessionYear,
+                    division,
+                    academyType,
+                    type,
+                    feeCategory,
+                    page,
+                    limit
+                } = req.query;
 
                 // ১. ডায়নামিক ফিল্টার অবজেক্ট
-                const filter = {};
+                const andClauses = [];
 
-                // ক্লাস ফিল্টারিং (PreHifz, Hifz অথবা Academy - যেকোনো একটির মধ্যে ক্লাস মিললেই হবে)
-                if (className) {
-                    filter.$or = [
-                        { "divisionAcademy.class": className },
-                        { "divisionHifz.class": className },
-                        { "divisionPreHifz.class": className }
-                    ];
-                }
-
-                // স্ট্যাটাস ফিল্টারিং (Case-Insensitive করার জন্য Case Ignore Regex ব্যবহার করা হয়েছে)
                 if (status) {
-                    filter.status = { $regex: new RegExp(`^${status}$`, 'i') }; // "Approved" বা "approved" উভয়ই ম্যাচ করবে
+                    andClauses.push({ status: { $regex: new RegExp(`^${status}$`, 'i') } });
                 }
 
-                // সার্চ ফিল্টারিং (যদি পাঠানো হয়)
-                if (search) {
-                    const searchRegex = { $regex: search, $options: "i" };
-                    const searchFilter = [
-                        { studentNameBangla: searchRegex },
-                        { studentNameEnglish: searchRegex },
-                        { "officeUse.rollNumber": searchRegex },
-                        { studentId: searchRegex }
-                    ];
-                    if (filter.$or) {
-                        filter.$and = [
-                            { $or: filter.$or },
-                            { $or: searchFilter }
-                        ];
-                        delete filter.$or;
-                    } else {
-                        filter.$or = searchFilter;
+                if (sessionYear && sessionYear !== "all") {
+                    andClauses.push({ sessionYear: sessionYear });
+                }
+
+                if (division && division !== "all") {
+                    if (division === "preHifz") {
+                        andClauses.push({ "divisionPreHifz.active": true });
+                    } else if (division === "hifz") {
+                        andClauses.push({ "divisionHifz.active": true });
+                    } else if (division === "academy") {
+                        andClauses.push({ "divisionAcademy.active": true });
                     }
                 }
 
+                if (academyType && academyType !== "all") {
+                    andClauses.push({ "divisionAcademy.active": true, "divisionAcademy.academyType": academyType });
+                }
+
+                if (className && className !== "all" && className) {
+                    andClauses.push({
+                        $or: [
+                            { "divisionAcademy.class": className },
+                            { "divisionHifz.class": className },
+                            { "divisionPreHifz.class": className }
+                        ]
+                    });
+                }
+
+                if (type && type !== "all") {
+                    andClauses.push({
+                        $or: [
+                            { "divisionPreHifz.active": true, "divisionPreHifz.type": type },
+                            { "divisionHifz.active": true, "divisionHifz.type": type },
+                            { "divisionAcademy.active": true, "divisionAcademy.type": type }
+                        ]
+                    });
+                }
+
+                if (feeCategory && feeCategory !== "all") {
+                    andClauses.push({ "officeUse.feeCategory": feeCategory });
+                }
+
+                if (search) {
+                    const searchRegex = { $regex: search, $options: "i" };
+                    andClauses.push({
+                        $or: [
+                            { studentNameBangla: searchRegex },
+                            { studentNameEnglish: searchRegex },
+                            { "officeUse.rollNumber": searchRegex },
+                            { studentId: searchRegex }
+                        ]
+                    });
+                }
+
+                const filter = andClauses.length > 0 ? { $and: andClauses } : {};
+
                 // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং
-                const students = await studentsCollection
+                let queryCursor = studentsCollection
                     .find(filter)
-                    .sort({ "officeUse.rollNumber": 1, studentId: 1 }) // রোল না থাকলে studentId দিয়ে সর্ট করবে
-                    .toArray();
+                    .sort({ "officeUse.rollNumber": 1, studentId: 1 }); // রোল না থাকলে studentId দিয়ে সর্ট করবে
+
+                let total = 0;
+                let totalPages = 1;
+                let currentPage = 1;
+
+                if (page !== undefined) {
+                    currentPage = parseInt(page) || 1;
+                    const limitNumber = Math.min(parseInt(limit) || 10, 10);
+                    const skip = (currentPage - 1) * limitNumber;
+
+                    total = await studentsCollection.countDocuments(filter);
+                    totalPages = Math.ceil(total / limitNumber);
+
+                    queryCursor = queryCursor.skip(skip).limit(limitNumber);
+                }
+
+                const students = await queryCursor.toArray();
 
                 // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
                 res.status(200).json({
                     success: true,
                     count: students.length,
+                    total: page !== undefined ? total : students.length,
+                    totalPages: page !== undefined ? totalPages : 1,
+                    currentPage: page !== undefined ? currentPage : 1,
                     data: students
                 });
 
@@ -1542,7 +1598,13 @@ async function run() {
                     academic,
                     experience,
                     publications,
-                    isPublicView
+                    isPublicView,
+                    hardSkills,
+                    softSkills,
+                    edTechSkills,
+                    certifications,
+                    awards,
+                    references
                 } = req.body;
 
                 if (!email || !fullName) {
@@ -1562,9 +1624,15 @@ async function run() {
                         bio: bio || "",
                         profileImage: profileImage || "", // <-- ইমেজ URL ডাটাবেসে সেভ হচ্ছে
                         socialLinks: socialLinks || {},
-                        academic: academic || {},
+                        academic: Array.isArray(academic) ? academic : [],
                         experience: Array.isArray(experience) ? experience : [],
                         publications: Array.isArray(publications) ? publications : [],
+                        hardSkills: hardSkills || "",
+                        softSkills: softSkills || "",
+                        edTechSkills: edTechSkills || "",
+                        certifications: Array.isArray(certifications) ? certifications : [],
+                        awards: Array.isArray(awards) ? awards : [],
+                        references: Array.isArray(references) ? references : [],
                         isPublicView: isPublicView ?? true,
                         updatedAt: new Date()
                     },
