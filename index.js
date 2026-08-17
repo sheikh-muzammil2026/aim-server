@@ -1526,93 +1526,114 @@ async function run() {
         });
 
 
+// teachersCollection = db.collection("teachers")
 
-        // ২. শিক্ষকের প্রোফাইল সেভ বা আপডেট করা (POST / Upsert)
-        app.post('/api/teacher/profile', async (req, res) => {
-            try {
-                const {
-                    email,
-                    fullName,
-                    designation,
-                    phone,
-                    address,
-                    bio,
-                    profileImage, // <-- নতুন ইমেজ URL ফিল্ড
-                    socialLinks,
-                    academic,
-                    experience,
-                    publications,
-                    isPublicView
-                } = req.body;
+// ১. শিক্ষকের প্রোফাইল তথ্য আনা (GET)
+app.get('/api/teacher/profile/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "ইমেইল প্রয়োজন।" });
+    }
 
-                if (!email || !fullName) {
-                    return res.status(400).json({
-                        success: false,
-                        message: "প্রয়োজনীয় তথ্য (ইমেইল ও নাম) প্রদান করুন।"
-                    });
-                }
+    const teacher = await teachersCollection.findOne({ email });
+    if (!teacher) {
+      return res.status(404).json({ success: false, message: "শিক্ষকের প্রোফাইল পাওয়া যায়নি।" });
+    }
 
-                const filter = { email: email };
-                const updateDoc = {
-                    $set: {
-                        fullName,
-                        designation: designation || "",
-                        phone: phone || "",
-                        address: address || "",
-                        bio: bio || "",
-                        profileImage: profileImage || "", // <-- ইমেজ URL ডাটাবেসে সেভ হচ্ছে
-                        socialLinks: socialLinks || {},
-                        academic: academic || {},
-                        experience: Array.isArray(experience) ? experience : [],
-                        publications: Array.isArray(publications) ? publications : [],
-                        isPublicView: isPublicView ?? true,
-                        updatedAt: new Date()
-                    },
-                    $setOnInsert: {
-                        createdAt: new Date()
-                    }
-                };
+    res.status(200).json({
+      success: true,
+      data: teacher
+    });
+  } catch (error) {
+    console.error("Fetch profile error:", error);
+    res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।", error: error.message });
+  }
+});
 
-                const result = await teachersCollection.updateOne(filter, updateDoc, { upsert: true });
 
-                res.status(200).json({
-                    success: true,
-                    message: "প্রোফাইল তথ্য সফলভাবে সেভ ও আপডেট করা হয়েছে।",
-                    data: result
-                });
+// ২. শিক্ষকের প্রোফাইল সেভ বা আপডেট করা (POST / Upsert)
+app.post('/api/teacher/profile', async (req, res) => {
+  try {
+    const {
+      email,
+      fullName,
+      designation,
+      phone,
+      address,
+      profileImage,     // নতুন যুক্ত করা হয়েছে
+      bio,
+      socialLinks,
+      academic,         // ক্লায়েন্ট সাইডে এখন এটি Array of Objects
+      experience,
+      hardSkills,       // নতুন যুক্ত করা হয়েছে
+      softSkills,       // নতুন যুক্ত করা হয়েছে
+      edTechSkills,     // নতুন যুক্ত করা হয়েছে
+      certifications,   // নতুন যুক্ত করা হয়েছে (Array)
+      publications,
+      awards,           // নতুন যুক্ত করা হয়েছে (Array)
+      references,       // নতুন যুক্ত করা হয়েছে (Array)
+      isPublicView
+    } = req.body;
 
-            } catch (error) {
-                console.error("Profile save error:", error);
-                res.status(500).json({
-                    success: false,
-                    message: "সার্ভারে প্রোফাইল সেভ করতে সমস্যা হয়েছে।",
-                    error: error.message
-                });
-            }
-        });
+    if (!email || !fullName) {
+      return res.status(400).json({
+        success: false,
+        message: "প্রয়োজনীয় তথ্য (ইমেইল ও নাম) প্রদান করুন।"
+      });
+    }
 
-        // ১. শিক্ষকের প্রোফাইল তথ্য আনা (GET)
-        app.get('/api/teacher/profile/:email', async (req, res) => {
-            try {
-                const { email } = req.params;
-                if (!email) {
-                    return res.status(400).json({ success: false, message: "ইমেইল প্রয়োজন।" });
-                }
+    const filter = { email: email };
+    const updateDoc = {
+      $set: {
+        fullName,
+        designation: designation || "",
+        phone: phone || "",
+        address: address || "",
+        profileImage: profileImage || "", // নতুন
+        bio: bio || "",
+        socialLinks: socialLinks || {},
+        
+        // ক্লায়েন্টের মতো করে Array ফিল্ডগুলো আপডেট করা হয়েছে
+        academic: Array.isArray(academic) ? academic : [], 
+        experience: Array.isArray(experience) ? experience : [],
+        
+        // নতুন স্কিলস
+        hardSkills: hardSkills || "",
+        softSkills: softSkills || "",
+        edTechSkills: edTechSkills || "",
+        
+        // নতুন অ্যারে ডাটাগুলো
+        certifications: Array.isArray(certifications) ? certifications : [],
+        publications: Array.isArray(publications) ? publications : [],
+        awards: Array.isArray(awards) ? awards : [],
+        references: Array.isArray(references) ? references : [],
+        
+        isPublicView: isPublicView ?? true,
+        updatedAt: new Date()
+      },
+      $setOnInsert: {
+        createdAt: new Date()
+      }
+    };
 
-                const teacher = await teachersCollection.findOne({ email });
-                if (!teacher) {
-                    return res.status(404).json({ success: false, message: "শিক্ষকের প্রোফাইল পাওয়া যায়নি।" });
-                }
+    const result = await teachersCollection.updateOne(filter, updateDoc, { upsert: true });
 
-                res.status(200).json({
-                    success: true,
-                    data: teacher
-                });
-            } catch (error) {
-                console.error("Fetch profile error:", error);
-                res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।", error: error.message });
-            }
-        });
+    res.status(200).json({
+      success: true,
+      message: "প্রোফাইল তথ্য সফলভাবে সেভ ও আপডেট করা হয়েছে।",
+      data: result
+    });
+
+  } catch (error) {
+    console.error("Profile save error:", error);
+    res.status(500).json({
+      success: false,
+      message: "সার্ভারে প্রোফাইল সেভ করতে সমস্যা হয়েছে।",
+      error: error.message
+    });
+  }
+});
 
         // মূল রুট
         app.get('/', (req, res) => {
