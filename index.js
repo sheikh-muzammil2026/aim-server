@@ -16,7 +16,7 @@ app.use(express.json());
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
-        strict: true,
+        strict: false,
         deprecationErrors: true,
     }
 });
@@ -44,6 +44,7 @@ async function run() {
         const seatPlansCollection = database.collection("seat_plan")
         const financeIncomesCollection = database.collection("finance_incomes");
         const financeExpensesCollection = database.collection("finance_expenses");
+        const teachersCollection = database.collection("teachers")
 
 
         app.post('/api/admin/routine', async (req, res) => {
@@ -332,13 +333,13 @@ async function run() {
                     }
 
                     // সংশ্লিষ্ট রুটিন খোঁজা (বিভাগ অনুযায়ী বা generic)
-                    const routine = routines.find(r => 
+                    const routine = routines.find(r =>
                         r.division === divisionKey || r.division === "all"
                     ) || routines[0];
 
                     let routineList = [];
                     if (routine && Array.isArray(routine.dates) && Array.isArray(routine.routineData)) {
-                        const classRoutine = routine.routineData.find(r => 
+                        const classRoutine = routine.routineData.find(r =>
                             r.class === className || r.class?.toLowerCase() === className?.toLowerCase()
                         );
 
@@ -355,7 +356,7 @@ async function run() {
                     }
 
                     // সিট প্ল্যান খোঁজা
-                    const seatPlan = seatPlans.find(sp => 
+                    const seatPlan = seatPlans.find(sp =>
                         sp.studentId === student.studentId || sp.studentId === student._id.toString()
                     );
 
@@ -446,7 +447,7 @@ async function run() {
                 if (!admitCardSettings) {
                     admitCardSettings = {
                         type: "admit_card_settings",
-                        examCenter: "আল-ইসলাহ একাডেমী হবিগঞ্জ",
+                        examCenter: "আল-সালাম আইডিয়াল মাদরাসাহ, হবিগঞ্জ",
                         instructions: [
                             "পরীক্ষা শুরু হওয়ার ২০ মিনিট পূর্বে পরীক্ষা কক্ষে প্রবেশ করে নিজ আসনে বসতে হবে",
                             "এডমিট কার্ড, আইডি কার্ড সাথে নিয়ে আসতে হবে",
@@ -483,13 +484,13 @@ async function run() {
                     className = student.officeUse?.recommendedClass || "N/A";
                 }
 
-                const routine = routines.find(r => 
+                const routine = routines.find(r =>
                     r.division === divisionKey || r.division === "all"
                 ) || routines[0];
 
                 let routineList = [];
                 if (routine && Array.isArray(routine.dates) && Array.isArray(routine.routineData)) {
-                    const classRoutine = routine.routineData.find(r => 
+                    const classRoutine = routine.routineData.find(r =>
                         r.class === className || r.class?.toLowerCase() === className?.toLowerCase()
                     );
 
@@ -732,10 +733,10 @@ async function run() {
 
                 // studentId দিয়ে শিক্ষার্থী খোঁজা
                 let student = await studentsCollection.findOne({ studentId: String(studentId) });
-                
+
                 // যদি studentsCollection-এ না থাকে, তবে admissions-এ approved স্ট্যাটাসসহ খোঁজা
                 if (!student) {
-                    student = await admissionCollection.findOne({ 
+                    student = await admissionCollection.findOne({
                         studentId: String(studentId),
                         status: { $regex: /^approved$/i }
                     });
@@ -1526,6 +1527,92 @@ async function run() {
 
 
 
+        // ২. শিক্ষকের প্রোফাইল সেভ বা আপডেট করা (POST / Upsert)
+        app.post('/api/teacher/profile', async (req, res) => {
+            try {
+                const {
+                    email,
+                    fullName,
+                    designation,
+                    phone,
+                    address,
+                    bio,
+                    profileImage, // <-- নতুন ইমেজ URL ফিল্ড
+                    socialLinks,
+                    academic,
+                    experience,
+                    publications,
+                    isPublicView
+                } = req.body;
+
+                if (!email || !fullName) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "প্রয়োজনীয় তথ্য (ইমেইল ও নাম) প্রদান করুন।"
+                    });
+                }
+
+                const filter = { email: email };
+                const updateDoc = {
+                    $set: {
+                        fullName,
+                        designation: designation || "",
+                        phone: phone || "",
+                        address: address || "",
+                        bio: bio || "",
+                        profileImage: profileImage || "", // <-- ইমেজ URL ডাটাবেসে সেভ হচ্ছে
+                        socialLinks: socialLinks || {},
+                        academic: academic || {},
+                        experience: Array.isArray(experience) ? experience : [],
+                        publications: Array.isArray(publications) ? publications : [],
+                        isPublicView: isPublicView ?? true,
+                        updatedAt: new Date()
+                    },
+                    $setOnInsert: {
+                        createdAt: new Date()
+                    }
+                };
+
+                const result = await teachersCollection.updateOne(filter, updateDoc, { upsert: true });
+
+                res.status(200).json({
+                    success: true,
+                    message: "প্রোফাইল তথ্য সফলভাবে সেভ ও আপডেট করা হয়েছে।",
+                    data: result
+                });
+
+            } catch (error) {
+                console.error("Profile save error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "সার্ভারে প্রোফাইল সেভ করতে সমস্যা হয়েছে।",
+                    error: error.message
+                });
+            }
+        });
+
+        // ১. শিক্ষকের প্রোফাইল তথ্য আনা (GET)
+        app.get('/api/teacher/profile/:email', async (req, res) => {
+            try {
+                const { email } = req.params;
+                if (!email) {
+                    return res.status(400).json({ success: false, message: "ইমেইল প্রয়োজন।" });
+                }
+
+                const teacher = await teachersCollection.findOne({ email });
+                if (!teacher) {
+                    return res.status(404).json({ success: false, message: "শিক্ষকের প্রোফাইল পাওয়া যায়নি।" });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    data: teacher
+                });
+            } catch (error) {
+                console.error("Fetch profile error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।", error: error.message });
+            }
+        });
 
         // মূল রুট
         app.get('/', (req, res) => {
