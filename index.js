@@ -1702,45 +1702,140 @@ async function run() {
                     }
                 });
 
-                // ৪. শিক্ষার্থীদের হল ভিত্তিক গ্রুপ করা
-                const groupedData = {};
+                // Helper to normalize Bengali class names to NFC
+                const normalizeClassName = (name) => {
+                    if (!name) return "N/A";
+                    return String(name).normalize('NFC').trim();
+                };
+
+                // ৪. শিক্ষার্থীদের হল ভিত্তিক গ্রুপ করা ও ডুপ্লিকেশন দূর করা
+                const seenStudentIds = new Set();
+                const seenMongoIds = new Set();
+
+                const allocatedSeats = [];
+                const unassignedStudents = [];
 
                 students.forEach(student => {
-                    // সিট প্ল্যান তথ্য বের করা (seat_plan কালেকশন অথবা স্টুডেন্ট ডকুমেন্ট থেকে)
-                    const sId = student.studentId || student._id.toString();
+                    const sId = student.studentId;
                     const sMongoId = student._id.toString();
-                    const matchedPlan = seatPlanMap[sId] || seatPlanMap[sMongoId];
 
-                    let hallNo = matchedPlan?.room || matchedPlan?.building || student.seatPlan?.hallNo || student.hallNo;
-                    if (!hallNo) {
-                        // যদি হল নম্বর না থাকে, তবে সেটি বাদ দিন বা "অন্যান্য/হল বিহীন" হিসেবে রাখুন
+                    // ইউনিকনেস ভ্যালিডেশন
+                    if (sId && seenStudentIds.has(sId)) {
+                        console.warn(`Duplicate studentId detected in summary: ${sId}`);
                         return;
                     }
-                    
-                    hallNo = String(hallNo).trim();
+                    if (seenMongoIds.has(sMongoId)) {
+                        console.warn(`Duplicate Mongo ID detected in summary: ${sMongoId}`);
+                        return;
+                    }
+
+                    if (sId) seenStudentIds.add(sId);
+                    seenMongoIds.add(sMongoId);
 
                     // শ্রেণি নির্ধারণ
-                    let className = "N/A";
+                    let rawClass = "N/A";
                     if (student.divisionPreHifz?.active) {
-                        className = student.divisionPreHifz.class || "N/A";
+                        rawClass = student.divisionPreHifz.class || "N/A";
                     } else if (student.divisionHifz?.active) {
-                        className = student.divisionHifz.class || "N/A";
+                        rawClass = student.divisionHifz.class || "N/A";
                     } else if (student.divisionAcademy?.active) {
-                        className = student.divisionAcademy.class || "N/A";
+                        rawClass = student.divisionAcademy.class || "N/A";
                     } else {
-                        className = student.officeUse?.recommendedClass || "N/A";
+                        rawClass = student.officeUse?.recommendedClass || "N/A";
                     }
 
-                    if (!groupedData[hallNo]) {
-                        groupedData[hallNo] = {};
-                    }
+                    const className = normalizeClassName(rawClass);
 
-                    if (!groupedData[hallNo][className]) {
-                        groupedData[hallNo][className] = 0;
-                    }
+                    // সিট প্ল্যান তথ্য বের করা
+                    const matchedPlan = seatPlanMap[sId] || seatPlanMap[sMongoId];
+                    let hallNo = matchedPlan?.room || matchedPlan?.building || student.seatPlan?.hallNo || student.hallNo;
+                    let seatNo = matchedPlan?.seatNo || student.seatPlan?.seatNo || student.seatNo;
 
-                    groupedData[hallNo][className]++;
+                    if (hallNo) hallNo = String(hallNo).trim();
+                    if (seatNo) seatNo = String(seatNo).trim();
+
+                    if (hallNo && seatNo && hallNo !== "" && seatNo !== "") {
+                        allocatedSeats.push({
+                            studentId: sId,
+                            studentMongoId: sMongoId,
+                            student: {
+                                ...student,
+                                class: className
+                            },
+                            hallNo,
+                            seatNo
+                        });
+                    } else {
+                        unassignedStudents.push({
+                            studentId: sId,
+                            studentMongoId: sMongoId,
+                            student: {
+                                ...student,
+                                class: className
+                            }
+                        });
+                    }
                 });
+
+                // ৫. allocatedSeats থেকে সরাসরি Summary গণনা করা (reduce ব্যবহার করে)
+                const groupedData = allocatedSeats.reduce((acc, seat) => {
+                    const hall = seat.hallNo;
+                    const className = seat.student.class;
+
+                    if (!acc[hall]) {
+                        acc[hall] = {};
+                    }
+                    acc[hall][className] = (acc[hall][className] || 0) + 1;
+                    return acc;
+                }, {});
+
+                // ৬. সেলফ-ভ্যালিডেশন এবং ক্রস-চেক লেয়ার
+                const totalUniqueStudents = seenMongoIds.size;
+                const totalAllocatedSeats = allocatedSeats.length;
+                const totalUnassignedStudents = unassignedStudents.length;
+
+                const isCountConsistent = totalUniqueStudents === (totalAllocatedSeats + totalUnassignedStudents);
+
+                let classSummarySum = 0;
+                Object.keys(groupedData).forEach(hall => {
+                    Object.keys(groupedData[hall]).forEach(cls => {
+                        classSummarySum += groupedData[hall][cls];
+                    });
+                });
+
+                const isSumConsistent = classSummarySum === totalAllocatedSeats;
+
+                if (!isCountConsistent || !isSumConsistent) {
+                    console.warn(`[SeatPlanSummary] Crosscheck failed!
+                      - Unique Students: ${totalUniqueStudents}
+                      - Allocated + Unassigned: ${totalAllocatedSeats + totalUnassignedStudents} (Allocated: ${totalAllocatedSeats}, Unassigned: ${totalUnassignedStudents})
+                      - Class Summary Sum: ${classSummarySum}
+                      - Total Assigned Seat Count: ${totalAllocatedSeats}
+                      Recalculating using real-time fallback...`);
+
+                    const fallbackGrouped = {};
+                    const fallbackProcessed = new Set();
+
+                    allocatedSeats.forEach(seat => {
+                        const uniqueKey = seat.studentId || seat.studentMongoId;
+                        if (fallbackProcessed.has(uniqueKey)) return;
+                        fallbackProcessed.add(uniqueKey);
+
+                        const hall = seat.hallNo;
+                        const cls = seat.student.class;
+                        if (!fallbackGrouped[hall]) {
+                            fallbackGrouped[hall] = {};
+                        }
+                        fallbackGrouped[hall][cls] = (fallbackGrouped[hall][cls] || 0) + 1;
+                    });
+
+                    res.status(200).json({
+                        success: true,
+                        data: fallbackGrouped,
+                        validationError: true
+                    });
+                    return;
+                }
 
                 res.status(200).json({
                     success: true,
