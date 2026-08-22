@@ -1682,6 +1682,194 @@ async function run() {
             }
         });
 
+        // ==========================================
+        // সীট প্ল্যান সামারি এবং পরীক্ষা স্বাক্ষরপত্র সংক্রান্ত APIs
+        // ==========================================
+
+        app.get('/api/seat-plans/summary', async (req, res) => {
+            try {
+                // ১. স্টুডেন্টদের তালিকা খোঁজা (Approved স্ট্যাটাসসহ)
+                const students = await studentsCollection.find({ status: "Approved" }).toArray();
+
+                // ২. seat_plan কালেকশন থেকে ডাটা নিয়ে আসা
+                const seatPlans = await seatPlansCollection.find().toArray();
+
+                // ৩. seatPlans কে ইন-মেমোরি ম্যাপে রূপান্তর করা সহজ অনুসন্ধানের জন্য
+                const seatPlanMap = {};
+                seatPlans.forEach(sp => {
+                    if (sp.studentId) {
+                        seatPlanMap[sp.studentId] = sp;
+                    }
+                });
+
+                // ৪. শিক্ষার্থীদের হল ভিত্তিক গ্রুপ করা
+                const groupedData = {};
+
+                students.forEach(student => {
+                    // সিট প্ল্যান তথ্য বের করা (seat_plan কালেকশন অথবা স্টুডেন্ট ডকুমেন্ট থেকে)
+                    const sId = student.studentId || student._id.toString();
+                    const sMongoId = student._id.toString();
+                    const matchedPlan = seatPlanMap[sId] || seatPlanMap[sMongoId];
+
+                    let hallNo = matchedPlan?.room || matchedPlan?.building || student.seatPlan?.hallNo || student.hallNo;
+                    if (!hallNo) {
+                        // যদি হল নম্বর না থাকে, তবে সেটি বাদ দিন বা "অন্যান্য/হল বিহীন" হিসেবে রাখুন
+                        return;
+                    }
+                    
+                    hallNo = String(hallNo).trim();
+
+                    // শ্রেণি নির্ধারণ
+                    let className = "N/A";
+                    if (student.divisionPreHifz?.active) {
+                        className = student.divisionPreHifz.class || "N/A";
+                    } else if (student.divisionHifz?.active) {
+                        className = student.divisionHifz.class || "N/A";
+                    } else if (student.divisionAcademy?.active) {
+                        className = student.divisionAcademy.class || "N/A";
+                    } else {
+                        className = student.officeUse?.recommendedClass || "N/A";
+                    }
+
+                    if (!groupedData[hallNo]) {
+                        groupedData[hallNo] = {};
+                    }
+
+                    if (!groupedData[hallNo][className]) {
+                        groupedData[hallNo][className] = 0;
+                    }
+
+                    groupedData[hallNo][className]++;
+                });
+
+                res.status(200).json({
+                    success: true,
+                    data: groupedData
+                });
+            } catch (error) {
+                console.error("Seat Plan Summary Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "সার্ভারে সিট প্ল্যান সামারি প্রস্তুত করতে সমস্যা হয়েছে।",
+                    error: error.message
+                });
+            }
+        });
+
+        app.get('/api/exams/list', async (req, res) => {
+            try {
+                const examTitles = await routinesCollection.distinct("examTitle");
+                res.status(200).json({ success: true, data: examTitles });
+            } catch (error) {
+                console.error("Fetch exams error:", error);
+                res.status(500).json({ success: false, message: "পরীক্ষার তালিকা লোড করতে সমস্যা হয়েছে।", error: error.message });
+            }
+        });
+
+        app.get('/api/exams/attendance-sheet', async (req, res) => {
+            try {
+                const { className, examName } = req.query;
+
+                if (!className || !examName) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "className এবং examName উভয়ই প্রয়োজন।"
+                    });
+                }
+
+                // ১. স্টুডেন্টদের তালিকা খোঁজা (নির্দিষ্ট ক্লাস ও Approved স্ট্যাটাস)
+                const query = {
+                    status: "Approved",
+                    $or: [
+                        { "divisionPreHifz.active": true, "divisionPreHifz.class": className },
+                        { "divisionHifz.active": true, "divisionHifz.class": className },
+                        { "divisionAcademy.active": true, "divisionAcademy.class": className },
+                        { "officeUse.recommendedClass": className }
+                    ]
+                };
+
+                const students = await studentsCollection.find(query).toArray();
+
+                // ২. রুটিন ও সাবজেক্ট শিডিউল খোঁজা
+                const routine = await routinesCollection.findOne({ examTitle: examName });
+
+                let subjectsList = [];
+                let hijriYear = "";
+                let englishYear = "";
+
+                if (routine) {
+                    hijriYear = routine.hijriYear || "";
+                    englishYear = routine.gregorianYear || "";
+
+                    if (Array.isArray(routine.dates) && Array.isArray(routine.routineData)) {
+                        const classRoutine = routine.routineData.find(r =>
+                            r.class === className || r.class?.toLowerCase() === className?.toLowerCase()
+                        );
+
+                        if (classRoutine && classRoutine.subjects) {
+                            // রুটিনের তারিখগুলো ম্যাপ করে সাবজেক্ট শিডিউল তৈরি করা
+                            subjectsList = routine.dates.map(d => {
+                                const subjectName = classRoutine.subjects[d.id];
+                                return {
+                                    id: d.id,
+                                    name: subjectName || "",
+                                    date: d.gregorian + " ইং:",
+                                    gregorianRaw: d.gregorianRaw || ""
+                                };
+                            }).filter(sub => sub.name && sub.name.trim() !== "" && sub.name !== "—");
+
+                            // তারিখ অনুযায়ী সর্ট করা (earliest/upcoming exam first)
+                            subjectsList.sort((a, b) => {
+                                const dateA = a.gregorianRaw ? new Date(a.gregorianRaw) : new Date(a.date.split(' ')[0].split('/').reverse().join('-'));
+                                const dateB = b.gregorianRaw ? new Date(b.gregorianRaw) : new Date(b.date.split(' ')[0].split('/').reverse().join('-'));
+                                return dateA - dateB;
+                            });
+                        }
+                    }
+                }
+
+                // ৩. স্টুডেন্টদের ডাটা ফরম্যাট করা
+                const formattedStudents = students.map(student => {
+                    return {
+                        roll: student.officeUse?.rollNumber || student.roll || "N/A",
+                        studentId: student.studentId || "N/A",
+                        studentName: student.studentNameBangla || student.studentNameEnglish || "নাম বিহীন"
+                    };
+                });
+
+                // রোল অনুযায়ী সর্ট করা
+                const parseRoll = (r) => {
+                    if (!r || r === "N/A") return Infinity;
+                    const bnToEn = { '০':'0', '১':'1', '২':'2', '৩':'3', '৪':'4', '৫':'5', '৬':'6', '৭':'7', '৮':'8', '৯':'9' };
+                    const enStr = String(r).split('').map(char => bnToEn[char] || char).join('');
+                    const num = parseInt(enStr, 10);
+                    return isNaN(num) ? Infinity : num;
+                };
+
+                formattedStudents.sort((a, b) => parseRoll(a.roll) - parseRoll(b.roll));
+
+                res.status(200).json({
+                    success: true,
+                    metaData: {
+                        className,
+                        examName,
+                        englishYear: englishYear ? `${englishYear}-${englishYear}` : "২০২৬-২০২৬",
+                        hijriYear: hijriYear || "১৪৪৭ - ১৪৪৮"
+                    },
+                    subjects: subjectsList,
+                    students: formattedStudents
+                });
+
+            } catch (error) {
+                console.error("Attendance Sheet API Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "উপস্থিতি স্বাক্ষরপত্র শিটের তথ্য প্রস্তুত করতে সমস্যা হয়েছে।",
+                    error: error.message
+                });
+            }
+        });
+
         // মূল রুট
         app.get('/', (req, res) => {
             res.send('As-Salam Ideal Madrasah  (AIM) Server is Running!');
