@@ -1851,6 +1851,152 @@ async function run() {
             }
         });
 
+        app.get('/api/seat-plan', async (req, res) => {
+            try {
+                console.log("Incoming Query Params:", req.query);
+                const { hallNo, semester } = req.query;
+                if (!hallNo) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Hall number is required"
+                    });
+                }
+
+                // Convert English digits to Bengali digits helper
+                const englishToBengali = (num) => {
+                    const digits = { '0': '০', '1': '১', '2': '২', '3': '৩', '4': '৪', '5': '৫', '6': '৬', '7': '৭', '8': '৮', '9': '৯' };
+                    return String(num).split('').map(d => digits[d] || d).join('');
+                };
+
+                const hallQuery = !isNaN(hallNo) ? Number(hallNo) : hallNo;
+                const bnHall = englishToBengali(hallNo);
+
+                const query = {
+                    $or: [
+                        { hallNo: hallQuery },
+                        { hallNo: String(hallNo) },
+                        { hallNo: bnHall }
+                    ],
+                    ...(semester && { semester: semester })
+                };
+
+                console.log("Query constructed for seats:", JSON.stringify(query));
+                let data = await database.collection('seats').find(query).sort({ seatNo: 1 }).toArray();
+
+                // Enrich seats with student name from 'students' collection if missing or incomplete
+                const seatStudentIds = data.map(s => s.studentId || s.student_id).filter(Boolean);
+                let studentDocs = [];
+                if (seatStudentIds.length > 0) {
+                    studentDocs = await database.collection('students').find({
+                        studentId: { $in: seatStudentIds.map(id => String(id)) }
+                    }).toArray();
+                }
+
+                const studentMap = {};
+                studentDocs.forEach(s => {
+                    studentMap[String(s.studentId)] = s;
+                });
+
+                data = data.map(seat => {
+                    const student = studentMap[String(seat.studentId || seat.student_id)];
+                    let nameVal = seat.name || seat.studentName || seat.studentNameBangla || seat.student_name;
+                    let classVal = seat.class || seat.className || seat.class_name || seat.classGroup || seat.jamayat;
+                    let rollVal = seat.roll || seat.rollNo || seat.roll_no || seat.studentId || seat.student_id;
+
+                    if (student) {
+                        // Always prioritize studentNameBangla from the student profile
+                        if (!nameVal || nameVal === 'Unknown' || nameVal === 'অন্যান্য' || nameVal === seat.studentId) {
+                            nameVal = student.studentNameBangla || student.name || 'Unknown';
+                        }
+                        if (!classVal || classVal === 'N/A') {
+                            if (student.divisionPreHifz?.active) {
+                                classVal = student.divisionPreHifz.class;
+                            } else if (student.divisionHifz?.active) {
+                                classVal = student.divisionHifz.class;
+                            } else if (student.divisionAcademy?.active) {
+                                classVal = student.divisionAcademy.class;
+                            } else {
+                                classVal = student.officeUse?.recommendedClass || "N/A";
+                            }
+                        }
+                        if (!rollVal) {
+                            rollVal = student.roll || student.officeUse?.rollNumber || student.studentId;
+                        }
+                    }
+
+                    return {
+                        ...seat,
+                        seatNo: Number(seat.seatNo || seat.seat_no || 0),
+                        class: classVal || 'N/A',
+                        name: nameVal || 'Unknown',
+                        roll: rollVal || '',
+                        studentId: seat.studentId || seat.student_id || (student ? student.studentId : '')
+                    };
+                });
+                
+                // Fallback to students collection if seats collection has no documents
+                if (data.length === 0) {
+                    console.log("No seats found in 'seats' collection, attempting fallback to 'students' collection...");
+                    const students = await database.collection('students').find({
+                        status: "Approved",
+                        $or: [
+                            { hallNo: String(hallNo) },
+                            { hallNo: Number(hallNo) },
+                            { hallNo: bnHall },
+                            { "seatPlan.hallNo": String(hallNo) },
+                            { "seatPlan.hallNo": Number(hallNo) },
+                            { "seatPlan.hallNo": bnHall }
+                        ]
+                    }).toArray();
+
+                    data = students.map(student => {
+                        let classVal = "N/A";
+                        if (student.divisionPreHifz?.active) {
+                            classVal = student.divisionPreHifz.class || "N/A";
+                        } else if (student.divisionHifz?.active) {
+                            classVal = student.divisionHifz.class || "N/A";
+                        } else if (student.divisionAcademy?.active) {
+                            classVal = student.divisionAcademy.class || "N/A";
+                        } else {
+                            classVal = student.officeUse?.recommendedClass || "N/A";
+                        }
+
+                        const currentSeatPlan = student.seatPlan || {};
+                        const actualSeatNo = Number(student.seatNo || currentSeatPlan.seatNo || 0);
+
+                        return {
+                            _id: student._id.toString(),
+                            hallNo: Number(student.hallNo || currentSeatPlan.hallNo || hallNo),
+                            seatNo: actualSeatNo,
+                            class: classVal,
+                            name: student.studentNameBangla || student.name || student.studentId,
+                            studentId: student.studentId,
+                            roll: student.roll || student.officeUse?.rollNumber || student.studentId,
+                            semester: semester || "দ্বিতীয় সাময়িক"
+                        };
+                    }).filter(s => s.seatNo > 0);
+                }
+
+                // Ensure data is sorted in strictly ascending order based on seatNo as fallback/final check
+                data.sort((a, b) => Number(a.seatNo || a.seat_no) - Number(b.seatNo || b.seat_no));
+
+                console.log("MongoDB Search Results (data count):", data.length);
+                console.log("MongoDB Search Results:", data);
+
+                res.status(200).json({
+                    success: true,
+                    data
+                });
+            } catch (error) {
+                console.error("Fetch Seat Plan Error:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "সার্ভারে সিট প্ল্যানের তথ্য পেতে সমস্যা হয়েছে।",
+                    error: error.message
+                });
+            }
+        });
+
         app.get('/api/exams/list', async (req, res) => {
             try {
                 const examTitles = await routinesCollection.distinct("examTitle");
