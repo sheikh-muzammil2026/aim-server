@@ -44,6 +44,7 @@ async function run() {
         const seatPlansCollection = database.collection("seat_plan")
         const financeIncomesCollection = database.collection("finance_incomes");
         const financeExpensesCollection = database.collection("finance_expenses");
+        const financeCategoriesCollection = database.collection("finance_categories");
         const teachersCollection = database.collection("teachers")
 
 
@@ -227,24 +228,32 @@ async function run() {
 
                 const filter = andClauses.length > 0 ? { $and: andClauses } : {};
 
-                // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং
-                let queryCursor = studentsCollection
-                    .find(filter)
-                    .sort({ "officeUse.rollNumber": 1, studentId: 1 }); // রোল না থাকলে studentId দিয়ে সর্ট করবে
-
+                // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং (স্বভাবিক গাণিতিক সর্টিং)
                 let total = 0;
                 let totalPages = 1;
                 let currentPage = 1;
+                let limitNumber = 10;
+                let queryCursor;
 
-                if (page !== undefined) {
+                total = await studentsCollection.countDocuments(filter);
+
+                if (page !== undefined || limit !== undefined) {
                     currentPage = parseInt(page) || 1;
-                    const limitNumber = Math.min(parseInt(limit) || 10, 10);
+                    limitNumber = parseInt(limit) || 10;
                     const skip = (currentPage - 1) * limitNumber;
-
-                    total = await studentsCollection.countDocuments(filter);
                     totalPages = Math.ceil(total / limitNumber);
 
-                    queryCursor = queryCursor.skip(skip).limit(limitNumber);
+                    queryCursor = studentsCollection
+                        .find(filter)
+                        .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+                        .collation({ locale: "en", numericOrdering: true })
+                        .skip(skip)
+                        .limit(limitNumber);
+                } else {
+                    queryCursor = studentsCollection
+                        .find(filter)
+                        .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+                        .collation({ locale: "en", numericOrdering: true });
                 }
 
                 const students = await queryCursor.toArray();
@@ -253,9 +262,12 @@ async function run() {
                 res.status(200).json({
                     success: true,
                     count: students.length,
-                    total: page !== undefined ? total : students.length,
-                    totalPages: page !== undefined ? totalPages : 1,
-                    currentPage: page !== undefined ? currentPage : 1,
+                    total: total,
+                    totalCount: total,
+                    totalPages: page !== undefined || limit !== undefined ? totalPages : 1,
+                    currentPage: currentPage,
+                    page: currentPage,
+                    limit: page !== undefined || limit !== undefined ? limitNumber : total,
                     data: students
                 });
 
@@ -1310,19 +1322,27 @@ async function run() {
         // ১. আয় এন্ট্রি করার API
         app.post('/api/finance/income', async (req, res) => {
             try {
-                const { receiptNo, payerName, date, month, items, paymentMethod, description } = req.body;
+                const { receiptNo, payerName, payerType, donorName, studentId, studentName, className, discount, date, month, items, paymentMethod, description } = req.body;
 
                 if (!date || !month || !Array.isArray(items) || items.length === 0) {
                     return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি আয়ের খাত দেওয়া আবশ্যক।" });
                 }
 
                 // মোট আয় হিসাব
-                const totalIncome = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const itemsTotal = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const parsedDiscount = parseFloat(discount) || 0;
+                const totalIncome = itemsTotal - parsedDiscount;
                 const finalReceiptNo = receiptNo || "INC-" + Date.now().toString().slice(-9);
 
                 const newIncome = {
                     receiptNo: finalReceiptNo,
                     payerName: payerName || "N/A",
+                    payerType: payerType || "donor",
+                    donorName: donorName || "",
+                    studentId: studentId || "",
+                    studentName: studentName || "",
+                    className: className || "",
+                    discount: parsedDiscount,
                     date,
                     month, // format: YYYY-MM
                     items: items.map(item => ({
@@ -1332,6 +1352,7 @@ async function run() {
                     totalIncome,
                     paymentMethod: paymentMethod || "Cash",
                     description: description || "",
+                    status: "pending",
                     createdAt: new Date()
                 };
 
@@ -1351,7 +1372,7 @@ async function run() {
         // ২. ব্যয় (ভাউচার) এন্ট্রি করার API
         app.post('/api/finance/expense', async (req, res) => {
             try {
-                const { voucherNo, receiverName, advanceAmount, chequeNo, date, month, items, description } = req.body;
+                const { voucherNo, receiverName, advanceAmount, chequeNo, date, month, items, description, reimbursement } = req.body;
 
                 if (!date || !month || !Array.isArray(items) || items.length === 0) {
                     return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি ব্যয়ের খাত দেওয়া আবশ্যক।" });
@@ -1371,11 +1392,16 @@ async function run() {
                     month, // format: YYYY-MM
                     items: items.map(item => ({
                         head: item.head,
-                        amount: parseFloat(item.amount) || 0
+                        amount: parseFloat(item.amount) || 0,
+                        institutionName: item.institutionName || "",
+                        shopName: item.shopName || "",
+                        shopVoucher: item.shopVoucher || ""
                     })),
                     totalExpense,
                     balance,
                     description: description || "",
+                    reimbursement: reimbursement || null,
+                    status: "pending",
                     createdAt: new Date()
                 };
 
@@ -1405,7 +1431,7 @@ async function run() {
 
                 // মোট আয় হিসাব
                 const incomeAggregation = await financeIncomesCollection.aggregate([
-                    { $match: { month: targetMonth } },
+                    { $match: { month: targetMonth, status: { $ne: "pending" } } },
                     {
                         $group: {
                             _id: null,
@@ -1416,7 +1442,7 @@ async function run() {
 
                 // মোট ব্যয় হিসাব
                 const expenseAggregation = await financeExpensesCollection.aggregate([
-                    { $match: { month: targetMonth } },
+                    { $match: { month: targetMonth, status: { $ne: "pending" } } },
                     {
                         $group: {
                             _id: null,
@@ -1431,7 +1457,7 @@ async function run() {
 
                 // খাত-ভিত্তিক আয়ের হিসাব
                 const incomeCategoryBreakdown = await financeIncomesCollection.aggregate([
-                    { $match: { month: targetMonth } },
+                    { $match: { month: targetMonth, status: { $ne: "pending" } } },
                     { $unwind: "$items" },
                     {
                         $group: {
@@ -1444,7 +1470,7 @@ async function run() {
 
                 // খাত-ভিত্তিক ব্যয়ের হিসাব
                 const expenseCategoryBreakdown = await financeExpensesCollection.aggregate([
-                    { $match: { month: targetMonth } },
+                    { $match: { month: targetMonth, status: { $ne: "pending" } } },
                     { $unwind: "$items" },
                     {
                         $group: {
@@ -1481,11 +1507,18 @@ async function run() {
                 const search = req.query.search || '';
                 const startDate = req.query.startDate;
                 const endDate = req.query.endDate;
+                const status = req.query.status;
 
                 const skip = (page - 1) * limit;
 
                 const buildFilter = (isIncome) => {
                     const filter = {};
+
+                    if (status) {
+                        filter.status = status;
+                    } else {
+                        filter.status = { $ne: "pending" };
+                    }
 
                     if (search) {
                         const regex = { $regex: search, $options: 'i' };
@@ -1578,6 +1611,225 @@ async function run() {
             } catch (error) {
                 console.error("Transactions query error:", error);
                 res.status(500).json({ success: false, message: "সার্ভার থেকে লেনদেনের তালিকা আনতে সমস্যা হয়েছে।" });
+            }
+        });
+
+
+
+        // ৪.৫. ট্রানজেকশন অনুমোদন করার API
+        app.put('/api/finance/approve', async (req, res) => {
+            try {
+                const { id, type } = req.body;
+                if (!id || !type) {
+                    return res.status(400).json({ success: false, message: "আইডি এবং প্রকার (income/expense) প্রদান করা আবশ্যক।" });
+                }
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "অকার্যকর আইডি।" });
+                }
+
+                const collection = type === 'income' ? financeIncomesCollection : financeExpensesCollection;
+                const result = await collection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: "approved", updatedAt: new Date() } }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ success: false, message: "লেনদেনটি পাওয়া যায়নি।" });
+                }
+
+                res.json({ success: true, message: "লেনদেনটি সফলভাবে অনুমোদন করা হয়েছে!" });
+            } catch (error) {
+                console.error("Approve transaction error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ১.৫. আয় আপডেট করার API
+        app.put('/api/finance/income/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "অকার্যকর আইডি।" });
+                }
+
+                const { receiptNo, payerName, payerType, donorName, studentId, studentName, className, discount, date, month, items, paymentMethod, description } = req.body;
+
+                if (!date || !month || !Array.isArray(items) || items.length === 0) {
+                    return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি আয়ের খাত দেওয়া আবশ্যক।" });
+                }
+
+                // মোট আয় হিসাব
+                const itemsTotal = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const parsedDiscount = parseFloat(discount) || 0;
+                const totalIncome = itemsTotal - parsedDiscount;
+
+                const updateDoc = {
+                    $set: {
+                        receiptNo,
+                        payerName: payerName || "N/A",
+                        payerType,
+                        donorName,
+                        studentId,
+                        studentName,
+                        className,
+                        discount: parsedDiscount,
+                        date,
+                        month,
+                        items: items.map(item => ({
+                            head: item.head,
+                            amount: parseFloat(item.amount) || 0
+                        })),
+                        totalIncome,
+                        paymentMethod: paymentMethod || "Cash",
+                        description: description || "",
+                        updatedAt: new Date()
+                    }
+                };
+
+                const result = await financeIncomesCollection.updateOne({ _id: new ObjectId(id) }, updateDoc);
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ success: false, message: "আয়ের তথ্য পাওয়া যায়নি।" });
+                }
+
+                res.json({ success: true, message: "আয়ের তথ্য সফলভাবে আপডেট করা হয়েছে!" });
+            } catch (error) {
+                console.error("Income update error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে আয়ের তথ্য আপডেট করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ২.৫. ব্যয় আপডেট করার API
+        app.put('/api/finance/expense/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "অকার্যকর আইডি।" });
+                }
+
+                const { voucherNo, receiverName, advanceAmount, chequeNo, date, month, items, description, reimbursement } = req.body;
+
+                if (!date || !month || !Array.isArray(items) || items.length === 0) {
+                    return res.status(400).json({ success: false, message: "তারিখ, মাস এবং অন্তত একটি ব্যয়ের খাত দেওয়া আবশ্যক।" });
+                }
+
+                const totalExpense = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+                const parsedAdvance = parseFloat(advanceAmount) || 0;
+                const balance = parsedAdvance - totalExpense;
+
+                const updateDoc = {
+                    $set: {
+                        voucherNo,
+                        receiverName: receiverName || "N/A",
+                        advanceAmount: parsedAdvance,
+                        chequeNo: chequeNo || "",
+                        date,
+                        month,
+                        items: items.map(item => ({
+                            head: item.head,
+                            amount: parseFloat(item.amount) || 0,
+                            institutionName: item.institutionName || "",
+                            shopName: item.shopName || "",
+                            shopVoucher: item.shopVoucher || ""
+                        })),
+                        totalExpense,
+                        balance,
+                        description: description || "",
+                        reimbursement: reimbursement || null,
+                        updatedAt: new Date()
+                    }
+                };
+
+                const result = await financeExpensesCollection.updateOne({ _id: new ObjectId(id) }, updateDoc);
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ success: false, message: "ব্যয়ের তথ্য পাওয়া যায়নি।" });
+                }
+
+                res.json({ success: true, message: "ব্যয়ের তথ্য সফলভাবে আপডেট করা হয়েছে!" });
+            } catch (error) {
+                console.error("Expense update error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে ব্যয়ের তথ্য আপডেট করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৫.১. ক্যাটাগরি তৈরি করার API
+        app.post('/api/finance/categories', async (req, res) => {
+            try {
+                const { name, presetFee } = req.body;
+                if (!name) {
+                    return res.status(400).json({ success: false, message: "খাতের নাম দেওয়া আবশ্যক।" });
+                }
+
+                const newCategory = {
+                    name,
+                    presetFee: parseFloat(presetFee) || 0,
+                    createdAt: new Date()
+                };
+
+                const result = await financeCategoriesCollection.insertOne(newCategory);
+                res.status(201).json({ success: true, message: "খাত সফলভাবে তৈরি করা হয়েছে!", data: newCategory, insertedId: result.insertedId });
+            } catch (error) {
+                console.error("Category save error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে খাত সংরক্ষণ করতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৫.২. ক্যাটাগরি তালিকা পাওয়ার API
+        app.get('/api/finance/categories', async (req, res) => {
+            try {
+                const categories = await financeCategoriesCollection.find({}).toArray();
+                res.json({ success: true, data: categories });
+            } catch (error) {
+                console.error("Category fetch error:", error);
+                res.status(500).json({ success: false, message: "সার্ভার থেকে খাতের তালিকা আনতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৫.৩. ক্যাটাগরি ডিলিট করার API
+        app.delete('/api/finance/categories/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).json({ success: false, message: "অকার্যকর আইডি।" });
+                }
+
+                const result = await financeCategoriesCollection.deleteOne({ _id: new ObjectId(id) });
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ success: false, message: "খাতটি পাওয়া যায়নি।" });
+                }
+
+                res.json({ success: true, message: "খাতটি সফলভাবে মুছে ফেলা হয়েছে।" });
+            } catch (error) {
+                console.error("Category delete error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে খাতটি মুছে ফেলতে সমস্যা হয়েছে।" });
+            }
+        });
+
+        // ৬. স্টুডেন্ট আইডি দিয়ে খোঁজ করার API
+        app.get('/api/finance/students/:studentId', async (req, res) => {
+            try {
+                const { studentId } = req.params;
+                const student = await studentsCollection.findOne({ studentId: String(studentId) });
+                if (!student) {
+                    return res.status(404).json({ success: false, message: "শিক্ষার্থী পাওয়া যায়নি।" });
+                }
+
+                let className = "N/A";
+                if (student.divisionPreHifz?.active) {
+                    className = student.divisionPreHifz.class || "N/A";
+                } else if (student.divisionHifz?.active) {
+                    className = student.divisionHifz.class || "N/A";
+                } else if (student.divisionAcademy?.active) {
+                    className = student.divisionAcademy.class || "N/A";
+                } else {
+                    className = student.officeUse?.recommendedClass || "N/A";
+                }
+
+                const name = student.studentNameBangla || student.studentNameEnglish || "N/A";
+                res.json({ success: true, data: { name, className } });
+            } catch (error) {
+                console.error("Student fetch error:", error);
+                res.status(500).json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
             }
         });
 
@@ -1933,7 +2185,7 @@ async function run() {
                         studentId: seat.studentId || seat.student_id || (student ? student.studentId : '')
                     };
                 });
-                
+
                 // Fallback to students collection if seats collection has no documents
                 if (data.length === 0) {
                     console.log("No seats found in 'seats' collection, attempting fallback to 'students' collection...");
@@ -2081,7 +2333,7 @@ async function run() {
                 // রোল অনুযায়ী সর্ট করা
                 const parseRoll = (r) => {
                     if (!r || r === "N/A") return Infinity;
-                    const bnToEn = { '০':'0', '১':'1', '২':'2', '৩':'3', '৪':'4', '৫':'5', '৬':'6', '৭':'7', '৮':'8', '৯':'9' };
+                    const bnToEn = { '০': '0', '১': '1', '২': '2', '৩': '3', '৪': '4', '৫': '5', '৬': '6', '৭': '7', '৮': '8', '৯': '9' };
                     const enStr = String(r).split('').map(char => bnToEn[char] || char).join('');
                     const num = parseInt(enStr, 10);
                     return isNaN(num) ? Infinity : num;
@@ -2116,7 +2368,7 @@ async function run() {
             res.send('As-Salam Ideal Madrasah  (AIM) Server is Running!');
         });
 
-        console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
+        // console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
 
         // সার্ভার চালুকরণ (MongoDB কানেকশনের পর)
         app.listen(port, () => {
