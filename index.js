@@ -760,16 +760,16 @@ async function run() {
 
                     return {
                         studentId: sId,
-                        studentName: student.studentNameBangla || student.studentNameEnglish || student.studentName || 'N/A',
-                        rollNumber: student.officeUse?.rollNumber || student.rollNumber || 'N/A',
+                        studentName: student.studentNameBangla || student.studentNameEnglish ||  'N/A',
+                        roll: student.roll ||  'N/A',
                         allSubjects: allSubjects
                     };
                 });
 
                 // রোল নম্বর অনুযায়ী সর্ট করা
                 results.sort((a, b) => {
-                    const rollA = parseInt(a.rollNumber) || Infinity;
-                    const rollB = parseInt(b.rollNumber) || Infinity;
+                    const rollA = parseInt(a.roll) || Infinity;
+                    const rollB = parseInt(b.roll) || Infinity;
                     return rollA - rollB;
                 });
 
@@ -841,10 +841,10 @@ async function run() {
                     success: true,
                     year: targetYear,
                     student: {
-                        name: student.studentNameBangla || student.studentNameEnglish || student.studentName || 'N/A',
+                        name: student.studentNameBangla || student.studentNameEnglish || 'N/A',
                         studentId: student.studentId,
                         class: getStudentClass(student),
-                        roll: student.officeUse?.rollNumber || student.rollNumber || 'N/A'
+                        roll: student.roll || 'N/A'
                     },
                     results: results
                 });
@@ -876,7 +876,7 @@ async function run() {
                 const academicYear = year || "২০২৬-২০২৭";
 
                 const operations = marksData.map((student) => {
-                    const { studentId, studentName, rollNumber, ctMark, examMark } = student;
+                    const { studentId, studentName, roll, ctMark, examMark } = student;
 
                     const filter = {
                         studentId: String(studentId),
@@ -899,7 +899,7 @@ async function run() {
                             update: {
                                 $set: {
                                     studentName: studentName || "N/A",
-                                    rollNumber: rollNumber || "N/A",
+                                    roll: roll || "N/A",
                                     updatedAt: new Date(),
                                     ...updateField
                                 },
