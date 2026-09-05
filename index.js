@@ -1952,6 +1952,48 @@ async function run() {
       }
     });
 
+    //  4.6 ট্রানজেকশন ডিলিট করার API
+    app.delete("/api/finance/delete", async (req, res) => {
+      try {
+        const { id, type } = req.body;
+        if (!id || !type) {
+          return res.status(400).json({
+            success: false,
+            message: "আইডি এবং প্রকার (income/expense) প্রদান করা আবশ্যক।",
+          });
+        }
+
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .json({ success: false, message: "অকার্যকর আইডি।" });
+        }
+
+        const collection =
+          type === "income"
+            ? financeIncomesCollection
+            : financeExpensesCollection;
+
+        const result = await collection.deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 0) {
+          return res
+            .status(404)
+            .json({ success: false, message: "লেনদেনটি পাওয়া যায়নি।" });
+        }
+
+        res.json({
+          success: true,
+          message: "লেনদেনটি সফলভাবে মুছে ফেলা হয়েছে!",
+        });
+      } catch (error) {
+        console.error("Delete transaction error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "সার্ভারে সমস্যা হয়েছে।" });
+      }
+    });
+
     // ১.৫. আয় আপডেট করার API
     app.put("/api/finance/income/:id", async (req, res) => {
       try {
