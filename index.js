@@ -48,6 +48,12 @@ async function run() {
       database.collection("finance_categories");
     const teachersCollection = database.collection("teachers");
 
+    // শিক্ষাবর্ষ / সেশন স্যানিটাইজেশন হেল্পার (একক বছর নিশ্চিত করতে)
+    const sanitizeYear = (yearStr, fallback = "") => {
+      const val = yearStr || fallback;
+      return (val || "").split(/[-–/]/)[0].trim();
+    };
+
     app.post("/api/admin/routine", async (req, res) => {
       try {
         const {
@@ -169,10 +175,11 @@ async function run() {
           });
         }
 
+        const cleanYear = sanitizeYear(year, "২০২৬");
         const query = {
           class: studentClass,
           subject: subject,
-          year: year || "২০২৬-২০২৭",
+          year: { $regex: new RegExp(`^${cleanYear}`) },
         };
 
         const marks = await marksCollection.find(query).toArray();
@@ -206,7 +213,7 @@ async function run() {
           });
         }
 
-        const targetYear = year || "২০২৬-২০২৭";
+        const targetYear = sanitizeYear(year, "২০২৬");
 
         // ১. ডায়নামিক ফিল্টার অবজেক্ট দিয়ে ওই ক্লাসের Approved শিক্ষার্থীদের খুঁজে বের করা
         const studentQuery = {
@@ -224,7 +231,7 @@ async function run() {
         const marksList = await marksCollection
           .find({
             class: className,
-            year: targetYear,
+            year: { $regex: new RegExp(`^${targetYear}`) },
           })
           .toArray();
 
@@ -289,7 +296,7 @@ async function run() {
         const { studentId } = req.params;
         const { year } = req.query;
 
-        const targetYear = year || "২০২৬-২০২৭";
+        const targetYear = sanitizeYear(year, "২০২৬");
 
         // studentId দিয়ে শিক্ষার্থী খোঁজা
         let student = await studentsCollection.findOne({
@@ -315,7 +322,7 @@ async function run() {
         const marksList = await marksCollection
           .find({
             studentId: String(studentId),
-            year: targetYear,
+            year: { $regex: new RegExp(`^${targetYear}`) },
           })
           .toArray();
 
@@ -383,7 +390,7 @@ async function run() {
           });
         }
 
-        const academicYear = year || "২০২৬-২০২৭";
+        const academicYear = sanitizeYear(year, "২০২৬");
 
         // 'A' বা 'Abs' হলে স্ট্রিং হিসেবে রাখবে, সংখ্যা হলে Float করবে, খালি হলে null করবে
         const parseMark = (mark) => {
@@ -488,7 +495,10 @@ async function run() {
         }
 
         if (sessionYear && sessionYear !== "all") {
-          andClauses.push({ sessionYear: sessionYear });
+          const cleanSessionYear = sanitizeYear(sessionYear);
+          andClauses.push({
+            sessionYear: { $regex: new RegExp(`^${cleanSessionYear}`) },
+          });
         }
 
         if (division && division !== "all") {
@@ -782,7 +792,7 @@ async function run() {
             fatherNameEnglish: student.fatherNameEnglish || "N/A",
             studentImage: student.studentImage || student.photoUrl || "",
             photoUrl: student.photoUrl || student.studentImage || "",
-            sessionYear: student.sessionYear || "২০২৬",
+            sessionYear: sanitizeYear(student.sessionYear, "২০২৬"),
             divisionName,
             divisionKey,
             className,
@@ -967,7 +977,7 @@ async function run() {
           fatherNameEnglish: student.fatherNameEnglish || "N/A",
           studentImage: student.studentImage || student.photoUrl || "",
           photoUrl: student.photoUrl || student.studentImage || "",
-          sessionYear: student.sessionYear || "২০২৬",
+          sessionYear: sanitizeYear(student.sessionYear, "২০২৬"),
           divisionName,
           divisionKey,
           className,
@@ -1105,6 +1115,10 @@ async function run() {
         // ক্লায়েন্ট পেজ থেকে পাঠানো ডেটা
         const updatedData = req.body;
 
+        if (updatedData.sessionYear) {
+          updatedData.sessionYear = sanitizeYear(updatedData.sessionYear, "২০২৬");
+        }
+
         // আপডেট করার সময় MongoDB-র ডিফল্ট `_id` ফিল্ডটি বাদ রাখা সুরক্ষিত
         delete updatedData._id;
 
@@ -1157,6 +1171,10 @@ async function run() {
     app.post("/api/admissions", async (req, res) => {
       try {
         const newApplication = req.body;
+
+        if (newApplication.sessionYear) {
+          newApplication.sessionYear = sanitizeYear(newApplication.sessionYear, "২০২৬");
+        }
 
         newApplication.studentId = "Pending"; // প্রারম্ভিক অবস্থায় Pending থাকবে
         newApplication.status = "Pending";
@@ -1385,6 +1403,10 @@ async function run() {
         }
 
         const { _id, createdAt, updatedAt, ...updateData } = req.body;
+
+        if (updateData.sessionYear) {
+          updateData.sessionYear = sanitizeYear(updateData.sessionYear, "২০২৬");
+        }
 
         const result = await admissionCollection.updateOne(
           { _id: new ObjectId(id) },
@@ -2917,10 +2939,8 @@ async function run() {
           metaData: {
             className,
             examName,
-            englishYear: englishYear
-              ? `${englishYear}-${englishYear}`
-              : "২০২৬-২০২৬",
-            hijriYear: hijriYear || "১৪৪৭ - ১৪৪৮",
+            englishYear: sanitizeYear(englishYear, "২০২৬"),
+            hijriYear: sanitizeYear(hijriYear, "১৪৪৭"),
           },
           subjects: subjectsList,
           students: formattedStudents,
