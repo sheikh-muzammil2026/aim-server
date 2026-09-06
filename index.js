@@ -696,7 +696,7 @@ async function run() {
         if (!admitCardSettings) {
           admitCardSettings = {
             type: "admit_card_settings",
-            examCenter: "আল-ইসলাহ একাডেমী হবিগঞ্জ",
+            examCenter: "আস সালাম আইডিয়াল মাদরাসাহ,হবিগঞ্জ",
             instructions: [
               "পরীক্ষা শুরু হওয়ার ২০ মিনিট পূর্বে পরীক্ষা কক্ষে প্রবেশ করে নিজ আসনে বসতে হবে",
               "এডমিট কার্ড, আইডি কার্ড সাথে নিয়ে আসতে হবে",
@@ -800,11 +800,11 @@ async function run() {
             upazila:
               student.currentAddress?.thana ||
               student.permanentAddress?.thana ||
-              "হবিগঞ্জ সদর",
+              "N/A",
             district:
               student.currentAddress?.district ||
               student.permanentAddress?.district ||
-              "হবিগঞ্জ",
+              "N/A",
             hallNo:
               seatPlan?.room ||
               seatPlan?.building ||
@@ -2884,13 +2884,13 @@ async function run() {
                 const dateA = a.gregorianRaw
                   ? new Date(a.gregorianRaw)
                   : new Date(
-                      a.date.split(" ")[0].split("/").reverse().join("-"),
-                    );
+                    a.date.split(" ")[0].split("/").reverse().join("-"),
+                  );
                 const dateB = b.gregorianRaw
                   ? new Date(b.gregorianRaw)
                   : new Date(
-                      b.date.split(" ")[0].split("/").reverse().join("-"),
-                    );
+                    b.date.split(" ")[0].split("/").reverse().join("-"),
+                  );
                 return dateA - dateB;
               });
             }
