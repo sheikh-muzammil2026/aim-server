@@ -47,11 +47,76 @@ async function run() {
     const financeCategoriesCollection =
       database.collection("finance_categories");
     const teachersCollection = database.collection("teachers");
+    const usersCollection = database.collection("user");
 
     // শিক্ষাবর্ষ / সেশন স্যানিটাইজেশন হেল্পার (একক বছর নিশ্চিত করতে)
     const sanitizeYear = (yearStr, fallback = "") => {
       const val = yearStr || fallback;
       return (val || "").split(/[-–/]/)[0].trim();
+    };
+
+    // অথেনটিকেশন ও আরবেক (RBAC) হেল্পার ফাংশন
+    const getAuthUser = async (req) => {
+      const email =
+        req.headers["x-user-email"] ||
+        req.body?.teacherEmail ||
+        req.body?.teacher ||
+        req.query?.userEmail;
+
+      if (!email) {
+        return null;
+      }
+
+      const cleanEmail = String(email).trim().toLowerCase();
+
+      // Better-auth user কালেকশন থেকে রোল যাচাই
+      const user = await usersCollection.findOne({
+        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+      });
+
+      if (user) {
+        return {
+          id: user._id || user.id,
+          email: user.email,
+          name: user.name,
+          role: (user.role || "").toLowerCase(),
+        };
+      }
+
+      // টিচার কালেকশনে খোঁজ করা
+      const teacher = await teachersCollection.findOne({
+        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+      });
+
+      if (teacher) {
+        return {
+          id: teacher._id,
+          email: teacher.email,
+          name: teacher.name || teacher.teacherName,
+          role: (teacher.role || "teacher").toLowerCase(),
+        };
+      }
+
+      // ডাটাবেজে ইউজার না থাকলে হেডার বা বডির রোল ফলব্যাক
+      const fallbackRole = (
+        req.headers["x-user-role"] ||
+        req.body?.userRole ||
+        "user"
+      ).toLowerCase();
+
+      return {
+        email: cleanEmail,
+        role: fallbackRole,
+      };
+    };
+
+    const isAdminUser = (user) => {
+      return (
+        user &&
+        (user.role === "admin" ||
+          user.role === "superadmin" ||
+          user.role === "administrator")
+      );
     };
 
     app.post("/api/admin/routine", async (req, res) => {
@@ -160,13 +225,196 @@ async function run() {
     });
 
     /**
-     * ২. নির্দিষ্ট শ্রেণি ও বিষয়ের ইনপুট করা মার্কস চেক/লোড করার API (সহজ ও কার্যকরী)
+     * অ্যাডমিন ওয়ান-টাইম রেজাল্ট পাবলিশ ফিল্ড মাইগ্রেশন API
+     * Endpoint: POST /api/admin/results/migrate-publish-status
+     */
+    app.post("/api/admin/results/migrate-publish-status", async (req, res) => {
+      try {
+        const authUser = await getAuthUser(req);
+        if (!isAdminUser(authUser)) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "অননুমোদিত অনুরোধ। শুধুমাত্র অ্যাডমিন মাইগ্রেশন প্রক্রিয়া সম্পন্ন করতে পারেন।",
+          });
+        }
+
+        const filter = {
+          $or: [
+            { isPublished: { $exists: false } },
+            { isPublished: null },
+          ],
+        };
+
+        const updateDoc = {
+          $set: {
+            isPublished: false,
+            "term1.isPublished": false,
+            "term2.isPublished": false,
+            "annual.isPublished": false,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await marksCollection.updateMany(filter, updateDoc);
+
+        res.status(200).json({
+          success: true,
+          message:
+            "রেজাল্ট ডকুমেন্টে isPublished সফলভাবে মাইগ্রেট ও সেট করা হয়েছে।",
+          matchedCount: result.matchedCount,
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        console.error("Migration endpoint error:", error);
+        res.status(500).json({
+          success: false,
+          message: "মাইগ্রেশন প্রক্রিয়া সম্পন্ন করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    /**
+     * রেজাল্ট প্রকাশ / অপ্রকাশিত (Publish / Unpublish) করার API (শুধুমাত্র অ্যাডমিন)
+     * Endpoint: PATCH /api/results/publish or POST /api/results/publish
+     */
+    const handlePublishToggle = async (req, res) => {
+      try {
+        const authUser = await getAuthUser(req);
+        if (!isAdminUser(authUser)) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "অননুমোদিত অ্যাক্সেস। শুধুমাত্র অ্যাডমিন ফলাফল প্রকাশ বা অপ্রকাশিত করতে পারেন।",
+          });
+        }
+
+        const { class: studentClass, examType, year, isPublished } = req.body;
+
+        if (isPublished === undefined) {
+          return res.status(400).json({
+            success: false,
+            message: "isPublished মান প্রদান করা আবশ্যক।",
+          });
+        }
+
+        const targetPublished = Boolean(isPublished);
+        const academicYear = sanitizeYear(year, "২০২৬");
+
+        const filter = {
+          year: { $regex: new RegExp(`^${academicYear}`) },
+        };
+
+        if (
+          studentClass &&
+          studentClass !== "all" &&
+          studentClass !== "সকল" &&
+          studentClass !== "সকল শ্রেণি"
+        ) {
+          filter.class = studentClass;
+        }
+
+        const updateSet = {
+          isPublished: targetPublished,
+          updatedAt: new Date(),
+          publishedBy: authUser?.email || "admin",
+          publishedAt: targetPublished ? new Date() : null,
+        };
+
+        if (examType) {
+          updateSet[`${examType}.isPublished`] = targetPublished;
+        }
+
+        const updateDoc = {
+          $set: updateSet,
+        };
+
+        const result = await marksCollection.updateMany(filter, updateDoc);
+
+        res.status(200).json({
+          success: true,
+          message: `ফলাফল সফলভাবে ${
+            targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
+          } করা হয়েছে।`,
+          isPublished: targetPublished,
+          matchedCount: result.matchedCount,
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        console.error("Result publish toggle error:", error);
+        res.status(500).json({
+          success: false,
+          message: "ফলাফল স্ট্যাটাস পরিবর্তন করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    };
+
+    app.patch("/api/results/publish", handlePublishToggle);
+    app.post("/api/results/publish", handlePublishToggle);
+
+    /**
+     * নির্দিষ্ট শ্রেণি ও পরীক্ষার পাবলিশ স্ট্যাটাস চেক API
+     * Endpoint: GET /api/results/status?class=...&examType=...&year=...
+     */
+    app.get("/api/results/status", async (req, res) => {
+      try {
+        const { class: studentClass, examType, term, year } = req.query;
+        const currentExam = examType || term;
+        const academicYear = sanitizeYear(year, "২০২৬");
+
+        const filter = {
+          year: { $regex: new RegExp(`^${academicYear}`) },
+        };
+
+        if (
+          studentClass &&
+          studentClass !== "all" &&
+          studentClass !== "সকল" &&
+          studentClass !== "সকল শ্রেণি"
+        ) {
+          filter.class = studentClass;
+        }
+
+        const sampleDoc = await marksCollection.findOne(filter);
+
+        let isPublished = false;
+        if (sampleDoc) {
+          if (
+            currentExam &&
+            sampleDoc[currentExam] &&
+            typeof sampleDoc[currentExam].isPublished === "boolean"
+          ) {
+            isPublished = sampleDoc[currentExam].isPublished;
+          } else {
+            isPublished = Boolean(sampleDoc.isPublished);
+          }
+        }
+
+        res.status(200).json({
+          success: true,
+          isPublished: isPublished,
+        });
+      } catch (error) {
+        console.error("Status check error:", error);
+        res.status(500).json({
+          success: false,
+          isPublished: false,
+          error: error.message,
+        });
+      }
+    });
+
+    /**
+     * ২. নির্দিষ্ট শ্রেণি ও বিষয়ের ইনপুট করা মার্কস চেক/লোড করার API
      * Endpoint: GET /api/marks/get
-     * Query Params: ?class=...&subject=...&year=...
+     * Query Params: ?class=...&subject=...&year=...&examType=...
      */
     app.get("/api/marks/get", async (req, res) => {
       try {
-        const { class: studentClass, subject, year } = req.query;
+        const { class: studentClass, subject, year, examType, term } = req.query;
+        const currentExam = examType || term;
 
         if (!studentClass || !subject) {
           return res.status(400).json({
@@ -184,8 +432,39 @@ async function run() {
 
         const marks = await marksCollection.find(query).toArray();
 
+        // এই শ্রেণি ও বিষয়ের জন্য রেজাল্ট পাবলিশ স্ট্যাটাস যাচাই
+        let isPublished = false;
+        if (marks.length > 0) {
+          isPublished = marks.some((m) => {
+            if (
+              currentExam &&
+              m[currentExam] &&
+              typeof m[currentExam].isPublished === "boolean"
+            ) {
+              return m[currentExam].isPublished;
+            }
+            return Boolean(m.isPublished);
+          });
+        } else {
+          // যদি এই বিষয়ের মার্কস এখনো এন্ট্রি না হয়ে থাকে, তবে ক্লাসের ওভারঅল বা অন্য বিষয়ের পাবলিশ স্ট্যাটাস চেক
+          const classFilter = {
+            class: studentClass,
+            year: { $regex: new RegExp(`^${cleanYear}`) },
+          };
+          if (currentExam) {
+            classFilter[`${currentExam}.isPublished`] = true;
+          } else {
+            classFilter.isPublished = true;
+          }
+          const publishedInClass = await marksCollection.findOne(classFilter);
+          if (publishedInClass) {
+            isPublished = true;
+          }
+        }
+
         res.status(200).json({
           success: true,
+          isPublished: isPublished,
           data: marks,
         });
       } catch (error) {
@@ -198,13 +477,14 @@ async function run() {
     });
 
     /**
-     * ৩. নির্দিষ্ট ক্লাসের সকল শিক্ষার্থীর রেজাল্ট / মেরিট লিস্ট দেখার API
+     * ৩. নির্দিষ্ট ক্লাসের সকল শিক্ষার্থীর রেজাল্ট / মেরিট লিস্ট দেখার API (পেজিনেটেড)
      * Endpoint: GET /api/results/class
-     * Query Params: ?class=...&year=...
+     * Query Params: ?class=...&year=...&term=...&page=1&limit=20
      */
     app.get("/api/results/class", async (req, res) => {
       try {
-        const { class: className, year } = req.query;
+        const { class: className, year, term, examType, page, limit } = req.query;
+        const currentExam = examType || term;
 
         if (!className) {
           return res.status(400).json({
@@ -225,7 +505,20 @@ async function run() {
           status: { $regex: /^approved$/i },
         };
 
-        const students = await studentsCollection.find(studentQuery).toArray();
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.max(1, parseInt(limit, 10) || 20);
+        const skip = (pageNum - 1) * limitNum;
+
+        const total = await studentsCollection.countDocuments(studentQuery);
+        const totalPages = Math.ceil(total / limitNum) || 1;
+
+        const students = await studentsCollection
+          .find(studentQuery)
+          .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+          .collation({ locale: "en", numericOrdering: true })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
 
         // ২. marksCollection থেকে ওই ক্লাসের ও সেশনের সকল শিক্ষার্থীর মার্কস নিয়ে আসা
         const marksList = await marksCollection
@@ -234,6 +527,39 @@ async function run() {
             year: { $regex: new RegExp(`^${targetYear}`) },
           })
           .toArray();
+
+        // ৩. পাবলিশ স্ট্যাটাস যাচাই
+        let isPublished = false;
+        if (marksList.length > 0) {
+          isPublished = marksList.some((m) => {
+            if (
+              currentExam &&
+              m[currentExam] &&
+              typeof m[currentExam].isPublished === "boolean"
+            ) {
+              return m[currentExam].isPublished;
+            }
+            return Boolean(m.isPublished);
+          });
+        }
+
+        // ৪. Access Control: Before publishing (isPublished === false), ONLY Admins can view class-wise-result
+        const authUser = await getAuthUser(req);
+        const isAdmin = isAdminUser(authUser);
+
+        if (!isPublished && !isAdmin) {
+          return res.status(403).json({
+            success: false,
+            isPublished: false,
+            message:
+              "ফলাফল এখনো প্রকাশ করা হয়নি। শুধুমাত্র অ্যাডমিন শ্রেণিভিত্তিক ফলাফল দেখতে পারবেন।",
+            data: [],
+            total: total,
+            page: pageNum,
+            limit: limitNum,
+            totalPages: totalPages,
+          });
+        }
 
         // studentId দিয়ে মার্কস গ্রুপ করা
         const marksByStudent = {};
@@ -245,7 +571,7 @@ async function run() {
           marksByStudent[sId].push(mark);
         });
 
-        // ৩. শিক্ষার্থীদের লিস্ট ও মার্কস মার্জ করে মেরিট শিট তৈরি করা
+        // ৫. শিক্ষার্থীদের লিস্ট ও মার্কস মার্জ করে মেরিট শিট তৈরি করা
         const results = students.map((student) => {
           const sId = String(student.studentId);
           const studentMarks = marksByStudent[sId] || [];
@@ -255,6 +581,7 @@ async function run() {
             term1: item.term1 || {},
             term2: item.term2 || {},
             annual: item.annual || {},
+            isPublished: item.isPublished,
           }));
 
           return {
@@ -263,6 +590,7 @@ async function run() {
               student.studentNameBangla || student.studentNameEnglish || "N/A",
             roll: student.roll || "N/A",
             allSubjects: allSubjects,
+            isPublished: studentMarks[0]?.isPublished ?? isPublished,
           };
         });
 
@@ -276,6 +604,14 @@ async function run() {
         res.status(200).json({
           success: true,
           data: results,
+          total: total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: totalPages,
+          isPublished: isPublished,
+          totalCount: total,
+          count: results.length,
+          currentPage: pageNum,
         });
       } catch (error) {
         console.error("Get Class Results Error:", error);
@@ -287,14 +623,98 @@ async function run() {
     });
 
     /**
+     * ফলাফল তালিকা এবং অনুসন্ধানের সাধারণ API (পেজিনেটেড)
+     * Endpoint: GET /api/results?class=...&year=...&term=...&subject=...&search=...&page=1&limit=20
+     */
+    app.get("/api/results", async (req, res) => {
+      try {
+        const {
+          class: className,
+          year,
+          term,
+          examType,
+          subject,
+          studentId,
+          search,
+          page,
+          limit,
+        } = req.query;
+
+        const andClauses = [];
+
+        if (className && className !== "all") {
+          andClauses.push({ class: className });
+        }
+
+        if (year && year !== "all") {
+          const cleanYear = sanitizeYear(year);
+          andClauses.push({ year: { $regex: new RegExp(`^${cleanYear}`) } });
+        }
+
+        if (subject && subject !== "all") {
+          andClauses.push({ subject: subject });
+        }
+
+        if (studentId) {
+          andClauses.push({ studentId: studentId });
+        }
+
+        if (search) {
+          andClauses.push({
+            $or: [
+              { studentId: { $regex: search, $options: "i" } },
+              { subject: { $regex: search, $options: "i" } },
+              { teacher: { $regex: search, $options: "i" } },
+            ],
+          });
+        }
+
+        const filter = andClauses.length > 0 ? { $and: andClauses } : {};
+
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.max(1, parseInt(limit, 10) || 20);
+        const skip = (pageNum - 1) * limitNum;
+
+        const total = await marksCollection.countDocuments(filter);
+        const totalPages = Math.ceil(total / limitNum) || 1;
+
+        const marks = await marksCollection
+          .find(filter)
+          .sort({ class: 1, studentId: 1, subject: 1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
+
+        res.status(200).json({
+          success: true,
+          data: marks,
+          total: total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: totalPages,
+          totalCount: total,
+          count: marks.length,
+          currentPage: pageNum,
+        });
+      } catch (error) {
+        console.error("Fetch Results API Error:", error);
+        res.status(500).json({
+          success: false,
+          message: "ফলাফলের তথ্য লোড করতে ব্যর্থ হয়েছে।",
+        });
+      }
+    });
+
+    /**
      * ৪. নির্দিষ্ট শিক্ষার্থীর রেজাল্ট / মার্কশিট দেখার API
      * Endpoint: GET /api/results/student/:studentId
-     * Query Params: ?year=...
+     * Query Params: ?year=...&term=...
      */
     app.get("/api/results/student/:studentId", async (req, res) => {
       try {
         const { studentId } = req.params;
-        const { year } = req.query;
+        const { year, term, examType } = req.query;
+        const currentExam = examType || term;
 
         const targetYear = sanitizeYear(year, "২০২৬");
 
@@ -326,11 +746,39 @@ async function run() {
           })
           .toArray();
 
+        // পাবলিশ স্ট্যাটাস যাচাই
+        let isPublished = false;
+        if (marksList.length > 0) {
+          isPublished = marksList.some((m) => {
+            if (
+              currentExam &&
+              m[currentExam] &&
+              typeof m[currentExam].isPublished === "boolean"
+            ) {
+              return m[currentExam].isPublished;
+            }
+            return Boolean(m.isPublished);
+          });
+        }
+
+        const authUser = await getAuthUser(req);
+        const isAdmin = isAdminUser(authUser);
+
+        // Access Control: When isPublished === false, non-admin users cannot access results
+        if (!isPublished && !isAdmin) {
+          return res.status(403).json({
+            success: false,
+            isPublished: false,
+            message: "এই শিক্ষাবর্ষের ফলাফল এখনো প্রকাশিত হয়নি।",
+          });
+        }
+
         const results = marksList.map((item) => ({
           subject: item.subject,
           term1: item.term1 || {},
           term2: item.term2 || {},
           annual: item.annual || {},
+          isPublished: item.isPublished,
         }));
 
         const getStudentClass = (s) => {
@@ -342,6 +790,7 @@ async function run() {
 
         res.status(200).json({
           success: true,
+          isPublished: isPublished,
           year: targetYear,
           student: {
             name:
@@ -365,7 +814,6 @@ async function run() {
      * ৫. টিচার প্যানেল থেকে শিক্ষার্থীদের মার্ক ইনপুট বা আপডেট করার API
      * Endpoint: POST /api/marks/input
      */
-
     app.post("/api/marks/input", async (req, res) => {
       try {
         const {
@@ -392,20 +840,48 @@ async function run() {
 
         const academicYear = sanitizeYear(year, "২০২৬");
 
+        // অথেনটিকেশন ও টিচার ক্রেডেনশিয়াল নির্ধারণ
+        const authUser = await getAuthUser(req);
+        const isAdmin = isAdminUser(authUser);
+        const teacherEmail =
+          authUser?.email ||
+          req.body.teacher ||
+          req.body.teacherEmail ||
+          "unknown";
+
+        // Locking Logic:
+        // If isPublished === true:
+        // - For Non-Admin teachers/users, backend API for result input/upsert MUST reject non-admin attempts.
+        // - Admin Privilege: Admins CAN STILL edit/update input fields even after publication.
+        const existingPublishedDoc = await marksCollection.findOne({
+          class: studentClass,
+          year: { $regex: new RegExp(`^${academicYear}`) },
+          $or: [
+            { [`${examType}.isPublished`]: true },
+            { isPublished: true },
+          ],
+        });
+
+        if (existingPublishedDoc && !isAdmin) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "ফলাফল ইতোমধ্যে প্রকাশিত হয়েছে। শুধুমাত্র অ্যাডমিন এটি সম্পাদনা বা আপডেট করতে পারবেন।",
+          });
+        }
+
         // 'A' বা 'Abs' হলে স্ট্রিং হিসেবে রাখবে, সংখ্যা হলে Float করবে, খালি হলে null করবে
         const parseMark = (mark) => {
           if (mark === "" || mark === null || mark === undefined) return null;
 
-          // যদি ইনপুট 'A' বা 'Abs' (ছোট হাত/বড় হাত যাই হোক) স্ট্রিং হয়
           if (
             typeof mark === "string" &&
             (mark.trim().toUpperCase() === "A" ||
               mark.trim().toUpperCase() === "ABS")
           ) {
-            return mark.trim().toUpperCase(); // 'A' বা 'ABS' রিটার্ন করবে
+            return mark.trim().toUpperCase();
           }
 
-          // সংখ্যা হলে Float এ রূপান্তর করবে
           const parsed = parseFloat(mark);
           return !isNaN(parsed) ? parsed : null;
         };
@@ -434,11 +910,14 @@ async function run() {
                 $set: {
                   studentName: studentName || "N/A",
                   roll: roll || "N/A",
+                  teacher: teacherEmail,
                   updatedAt: new Date(),
                   ...updateField,
                 },
                 $setOnInsert: {
                   createdAt: new Date(),
+                  isPublished: false,
+                  [`${examType}.isPublished`]: false,
                 },
               },
               upsert: true,
@@ -557,48 +1036,32 @@ async function run() {
         const filter = andClauses.length > 0 ? { $and: andClauses } : {};
 
         // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং (স্বভাবিক গাণিতিক সর্টিং)
-        let total = 0;
-        let totalPages = 1;
-        let currentPage = 1;
-        let limitNumber = 10;
-        let queryCursor;
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.max(1, parseInt(limit, 10) || 20);
+        const skip = (pageNum - 1) * limitNum;
 
-        total = await studentsCollection.countDocuments(filter);
+        const total = await studentsCollection.countDocuments(filter);
+        const totalPages = Math.ceil(total / limitNum) || 1;
 
-        if (page !== undefined || limit !== undefined) {
-          currentPage = parseInt(page) || 1;
-          limitNumber = parseInt(limit) || 10;
-          const skip = (currentPage - 1) * limitNumber;
-          totalPages = Math.ceil(total / limitNumber);
-
-          queryCursor = studentsCollection
-            .find(filter)
-            .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
-            .collation({ locale: "en", numericOrdering: true })
-            .skip(skip)
-            .limit(limitNumber);
-        } else {
-          queryCursor = studentsCollection
-            .find(filter)
-            .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
-            .collation({ locale: "en", numericOrdering: true });
-        }
-
-        const students = await queryCursor.toArray();
+        const students = await studentsCollection
+          .find(filter)
+          .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+          .collation({ locale: "en", numericOrdering: true })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
 
         // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
         res.status(200).json({
           success: true,
-          count: students.length,
-          total: total,
-          totalCount: total,
-          totalPages:
-            page !== undefined || limit !== undefined ? totalPages : 1,
-          currentPage: currentPage,
-          page: currentPage,
-          limit:
-            page !== undefined || limit !== undefined ? limitNumber : total,
           data: students,
+          total: total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: totalPages,
+          totalCount: total,
+          count: students.length,
+          currentPage: pageNum,
         });
       } catch (error) {
         console.error("Fetch Students API Error:", error);
