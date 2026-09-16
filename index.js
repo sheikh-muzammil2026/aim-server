@@ -3,6 +3,12 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const crypto = require("node:crypto");
+const {
+  sendPasswordResetEmail,
+  sendEmailVerificationEmail,
+  sendPasswordChangedNotification,
+} = require("./mailer");
 
 const app = express();
 const port = process.env.PORT || 8000;
@@ -48,6 +54,9 @@ async function run() {
       database.collection("finance_categories");
     const teachersCollection = database.collection("teachers");
     const usersCollection = database.collection("user");
+    const accountsCollection = database.collection("account");
+    const verificationTokensCollection =
+      database.collection("verification_tokens");
 
     // শিক্ষাবর্ষ / সেশন স্যানিটাইজেশন হেল্পার (একক বছর নিশ্চিত করতে)
     const sanitizeYear = (yearStr, fallback = "") => {
@@ -3414,6 +3423,571 @@ async function run() {
           success: false,
           message:
             "উপস্থিতি স্বাক্ষরপত্র শিটের তথ্য প্রস্তুত করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // পাসওয়ার্ড হ্যাশিং হেল্পার (Better-Auth Compatible scrypt)
+    // ==========================================
+    const scryptConfig = {
+      N: 16384,
+      r: 16,
+      p: 1,
+      dkLen: 64,
+    };
+
+    function generateScryptKey(password, salt) {
+      return new Promise((resolve, reject) => {
+        crypto.scrypt(
+          password.normalize("NFKC"),
+          salt,
+          scryptConfig.dkLen,
+          {
+            N: scryptConfig.N,
+            r: scryptConfig.r,
+            p: scryptConfig.p,
+            maxmem: 128 * scryptConfig.N * scryptConfig.r * 2,
+          },
+          (err, key) => {
+            if (err) reject(err);
+            else resolve(key);
+          }
+        );
+      });
+    }
+
+    async function hashUserPassword(password) {
+      const salt = crypto.randomBytes(16).toString("hex");
+      const key = await generateScryptKey(password, salt);
+      return `${salt}:${key.toString("hex")}`;
+    }
+
+    async function verifyUserPassword(hash, password) {
+      if (!hash || typeof hash !== "string") return false;
+      const [salt, key] = hash.split(":");
+      if (!salt || !key) return false;
+      const targetKey = await generateScryptKey(password, salt);
+      return targetKey.toString("hex") === key;
+    }
+
+    const getClientBaseUrl = (req) => {
+      const origin = req.headers.origin || req.headers.referer;
+      if (origin) {
+        try {
+          const parsed = new URL(origin);
+          return `${parsed.protocol}//${parsed.host}`;
+        } catch (_) {}
+      }
+      return (
+        process.env.CLIENT_BASE_URL ||
+        process.env.NEXT_PUBLIC_BASE_URI ||
+        "http://localhost:3000"
+      );
+    };
+
+    // ==========================================
+    // ১. প্রোফাইল ইনফো আপডেট API (নাম ও ছবি)
+    // ==========================================
+    app.put("/api/user/profile", async (req, res) => {
+      try {
+        const { userId, email, name, image } = req.body;
+
+        if (!userId && !email) {
+          return res.status(400).json({
+            success: false,
+            message: "ইউজার আইডি অথবা ইমেইল আবশ্যক।",
+          });
+        }
+
+        const query = {};
+        if (userId) {
+          query._id = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+        } else if (email) {
+          query.email = {
+            $regex: new RegExp(`^${String(email).trim()}$`, "i"),
+          };
+        }
+
+        const user = await usersCollection.findOne(query);
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: "ব্যবহারকারী খুঁজে পাওয়া যায়নি।",
+          });
+        }
+
+        const updateFields = { updatedAt: new Date() };
+        if (name !== undefined) updateFields.name = String(name).trim();
+        if (image !== undefined) updateFields.image = String(image).trim();
+
+        await usersCollection.updateOne({ _id: user._id }, { $set: updateFields });
+
+        const updatedUser = await usersCollection.findOne({ _id: user._id });
+
+        res.json({
+          success: true,
+          message: "প্রোফাইল সফলভাবে আপডেট করা হয়েছে।",
+          user: {
+            id: updatedUser._id,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            image: updatedUser.image,
+            role: updatedUser.role,
+          },
+        });
+      } catch (error) {
+        console.error("Profile update error:", error);
+        res.status(500).json({
+          success: false,
+          message: "প্রোফাইল আপডেট করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // ২. সরাসরি পাসওয়ার্ড পরিবর্তন API (লগইন করা অবস্থায়)
+    // ==========================================
+    app.post("/api/user/change-password", async (req, res) => {
+      try {
+        const { userId, email, currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+          return res.status(400).json({
+            success: false,
+            message: "বর্তমান ও নতুন পাসওয়ার্ড উভয়ই প্রদান করতে হবে।",
+          });
+        }
+
+        if (newPassword.length < 6) {
+          return res.status(400).json({
+            success: false,
+            message: "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।",
+          });
+        }
+
+        let user = null;
+        if (userId) {
+          user = await usersCollection.findOne({
+            _id: ObjectId.isValid(userId) ? new ObjectId(userId) : userId,
+          });
+        } else if (email) {
+          user = await usersCollection.findOne({
+            email: { $regex: new RegExp(`^${String(email).trim()}$`, "i") },
+          });
+        }
+
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: "ব্যবহারকারী খুঁজে পাওয়া যায়নি।",
+          });
+        }
+
+        // অ্যাকাউন্ট কালেকশন থেকে ক্রিডেনশিয়ালস যাচাই
+        const account = await accountsCollection.findOne({
+          $or: [
+            { userId: user._id, providerId: "credential" },
+            { userId: String(user._id), providerId: "credential" },
+          ],
+        });
+
+        if (!account || !account.password) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "এই অ্যাকাউন্টে কোনো পাসওয়ার্ড সেট করা নেই অথবা সামাজিক মাধ্যমে লগইন করা।",
+          });
+        }
+
+        const isCurrentValid = await verifyUserPassword(
+          account.password,
+          currentPassword
+        );
+        if (!isCurrentValid) {
+          return res.status(400).json({
+            success: false,
+            message: "বর্তমান পাসওয়ার্ডটি সঠিক নয়।",
+          });
+        }
+
+        const newHashedPassword = await hashUserPassword(newPassword);
+
+        await accountsCollection.updateOne(
+          { _id: account._id },
+          {
+            $set: {
+              password: newHashedPassword,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        // সুরক্ষার জন্য নোটিফিকেশন ইমেইল প্রেরণ
+        sendPasswordChangedNotification({
+          to: user.email,
+          name: user.name,
+        }).catch((e) => console.error("Notification email error:", e));
+
+        res.json({
+          success: true,
+          message: "পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে।",
+        });
+      } catch (error) {
+        console.error("Change password error:", error);
+        res.status(500).json({
+          success: false,
+          message: "পাসওয়ার্ড পরিবর্তন করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // ৩. ইমেইল পরিবর্তনের ভেরিফিকেশন লিংক পাঠানোর API
+    // ==========================================
+    app.post("/api/user/request-email-update", async (req, res) => {
+      try {
+        const { userId, email, newEmail } = req.body;
+
+        if (!newEmail || !String(newEmail).includes("@")) {
+          return res.status(400).json({
+            success: false,
+            message: "একটি বৈধ নতুন ইমেইল ঠিকানা প্রদান করুন।",
+          });
+        }
+
+        const cleanNewEmail = String(newEmail).trim().toLowerCase();
+
+        let user = null;
+        if (userId) {
+          user = await usersCollection.findOne({
+            _id: ObjectId.isValid(userId) ? new ObjectId(userId) : userId,
+          });
+        } else if (email) {
+          user = await usersCollection.findOne({
+            email: { $regex: new RegExp(`^${String(email).trim()}$`, "i") },
+          });
+        }
+
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: "ব্যবহারকারী খুঁজে পাওয়া যায়নি।",
+          });
+        }
+
+        if (user.email && user.email.toLowerCase() === cleanNewEmail) {
+          return res.status(400).json({
+            success: false,
+            message: "প্রদত্ত ইমেইলটি আপনার বর্তমান ইমেইলের অনুরূপ।",
+          });
+        }
+
+        // নতুন ইমেইলটি অন্য কারো দ্বারা ব্যবহৃত কিনা পরীক্ষা
+        const existingWithEmail = await usersCollection.findOne({
+          email: { $regex: new RegExp(`^${cleanNewEmail}$`, "i") },
+          _id: { $ne: user._id },
+        });
+
+        if (existingWithEmail) {
+          return res.status(400).json({
+            success: false,
+            message: "এই ইমেইলটি ইতোমধ্যে অন্য একটি অ্যাকাউন্টে ব্যবহৃত হচ্ছে।",
+          });
+        }
+
+        // সুরক্ষিত টোকেন তৈরি (মেয়াদ ১ ঘণ্টা)
+        const token = crypto.randomBytes(32).toString("hex");
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+        await verificationTokensCollection.deleteMany({
+          userId: user._id,
+          type: "email_update",
+        });
+
+        await verificationTokensCollection.insertOne({
+          token,
+          userId: user._id,
+          type: "email_update",
+          currentEmail: user.email,
+          newEmail: cleanNewEmail,
+          expiresAt,
+          createdAt: new Date(),
+        });
+
+        const baseUrl = getClientBaseUrl(req);
+        const verifyUrl = `${baseUrl}/verify-update?token=${token}&type=email`;
+
+        await sendEmailVerificationEmail({
+          to: cleanNewEmail,
+          name: user.name,
+          verifyUrl,
+        });
+
+        res.json({
+          success: true,
+          message:
+            "নতুন ইমেইলে একটি নিশ্চিতকরণ লিংক পাঠানো হয়েছে। অনুগ্রহ করে ইনবক্স চেক করে লিংকটিতে ক্লিক করুন।",
+          verifyUrl: process.env.NODE_ENV === "development" ? verifyUrl : undefined,
+        });
+      } catch (error) {
+        console.error("Request email update error:", error);
+        res.status(500).json({
+          success: false,
+          message: "ইমেইল ভেরিফিকেশন লিংক পাঠাতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // ৪. ইমেইল বা পরিবর্তন ভেরিফিকেশন API
+    // ==========================================
+    app.post("/api/user/verify-update", async (req, res) => {
+      try {
+        const { token, type = "email" } = req.body;
+
+        if (!token) {
+          return res.status(400).json({
+            success: false,
+            message: "ভেরিফিকেশন টোকেন প্রদান করা হয়নি।",
+          });
+        }
+
+        const tokenType = type === "email" ? "email_update" : type;
+        const tokenDoc = await verificationTokensCollection.findOne({
+          token,
+          type: tokenType,
+        });
+
+        if (!tokenDoc) {
+          return res.status(400).json({
+            success: false,
+            message: "ভেরিফিকেশন লিংকটি অবৈধ বা ইতিমধ্যে ব্যবহৃত হয়েছে।",
+          });
+        }
+
+        if (new Date() > new Date(tokenDoc.expiresAt)) {
+          await verificationTokensCollection.deleteOne({ _id: tokenDoc._id });
+          return res.status(400).json({
+            success: false,
+            message: "ভেরিফিকেশন লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন অনুরোধ করুন।",
+          });
+        }
+
+        if (tokenDoc.type === "email_update" && tokenDoc.newEmail) {
+          const newEmail = tokenDoc.newEmail.toLowerCase().trim();
+
+          // ইউজার কালেকশনে ইমেইল আপডেট
+          await usersCollection.updateOne(
+            { _id: tokenDoc.userId },
+            { $set: { email: newEmail, updatedAt: new Date() } }
+          );
+
+          // অ্যাকাউন্ট কালেকশনেও ইমেইল/অ্যাকাউন্ট আইডি আপডেট (যদি credential থাকে)
+          await accountsCollection.updateOne(
+            {
+              $or: [
+                { userId: tokenDoc.userId, providerId: "credential" },
+                { userId: String(tokenDoc.userId), providerId: "credential" },
+              ],
+            },
+            { $set: { updatedAt: new Date() } }
+          );
+
+          // টোকেন মুছে ফেলা
+          await verificationTokensCollection.deleteOne({ _id: tokenDoc._id });
+
+          return res.json({
+            success: true,
+            message:
+              "ইমেইল ঠিকানা সফলভাবে পরিবর্তিত হয়েছে! এখন নতুন ইমেইল দিয়ে লগইন করতে পারেন।",
+            newEmail,
+          });
+        }
+
+        res.status(400).json({
+          success: false,
+          message: "অপরিচিত ভেরিফিকেশন অনুরোধ।",
+        });
+      } catch (error) {
+        console.error("Verify update error:", error);
+        res.status(500).json({
+          success: false,
+          message: "ভেরিফিকেশন সম্পন্ন করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // ৫. পাসওয়ার্ড ভুলে গেছেন? রিসেট রিকোয়েস্ট API
+    // ==========================================
+    app.post("/api/auth/forgot-password", async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        if (!email || !String(email).includes("@")) {
+          return res.status(400).json({
+            success: false,
+            message: "একটি বৈধ নিবন্ধিত ইমেইল ঠিকানা প্রদান করুন।",
+          });
+        }
+
+        const cleanEmail = String(email).trim().toLowerCase();
+        const user = await usersCollection.findOne({
+          email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+        });
+
+        // সুরক্ষার খাতিরে ইউজার না থাকলেও জেনেরিক রেসপন্স দেওয়া ভালো
+        if (!user) {
+          return res.json({
+            success: true,
+            message:
+              "যদি এই ইমেইলটি আমাদের সিস্টেমে নিবন্ধিত থাকে, তবে একটি পাসওয়ার্ড রিসেট লিংক পাঠানো হয়েছে।",
+          });
+        }
+
+        const token = crypto.randomBytes(32).toString("hex");
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+        await verificationTokensCollection.deleteMany({
+          userId: user._id,
+          type: "password_reset",
+        });
+
+        await verificationTokensCollection.insertOne({
+          token,
+          userId: user._id,
+          type: "password_reset",
+          email: user.email,
+          expiresAt,
+          createdAt: new Date(),
+        });
+
+        const baseUrl = getClientBaseUrl(req);
+        const resetUrl = `${baseUrl}/reset-password?token=${token}`;
+
+        await sendPasswordResetEmail({
+          to: user.email,
+          name: user.name,
+          resetUrl,
+        });
+
+        res.json({
+          success: true,
+          message:
+            "আপনার ইমেইলে একটি পাসওয়ার্ড রিসেট লিংক পাঠানো হয়েছে। অনুগ্রহ করে ইনবক্স চেক করুন।",
+          resetUrl: process.env.NODE_ENV === "development" ? resetUrl : undefined,
+        });
+      } catch (error) {
+        console.error("Forgot password API error:", error);
+        res.status(500).json({
+          success: false,
+          message: "পাসওয়ার্ড রিসেট লিংক পাঠাতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
+    // ==========================================
+    // ৬. নতুন পাসওয়ার্ড নির্ধারণ (রিসেট এক্সিকিউশন) API
+    // ==========================================
+    app.post("/api/auth/reset-password", async (req, res) => {
+      try {
+        const { token, newPassword } = req.body;
+
+        if (!token || !newPassword) {
+          return res.status(400).json({
+            success: false,
+            message: "টোকেন এবং নতুন পাসওয়ার্ড উভয়ই আবশ্যক।",
+          });
+        }
+
+        if (newPassword.length < 6) {
+          return res.status(400).json({
+            success: false,
+            message: "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।",
+          });
+        }
+
+        const tokenDoc = await verificationTokensCollection.findOne({
+          token,
+          type: "password_reset",
+        });
+
+        if (!tokenDoc) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "পাসওয়ার্ড রিসেট লিংকটি অবৈধ অথবা ইতোমধ্যে ব্যবহৃত হয়েছে।",
+          });
+        }
+
+        if (new Date() > new Date(tokenDoc.expiresAt)) {
+          await verificationTokensCollection.deleteOne({ _id: tokenDoc._id });
+          return res.status(400).json({
+            success: false,
+            message:
+              "পাসওয়ার্ড রিসেট লিংকের মেয়াদ শেষ হয়ে গেছে। পুনরায় অনুরোধ করুন।",
+          });
+        }
+
+        const hashedPassword = await hashUserPassword(newPassword);
+
+        // অ্যাকাউন্ট কালেকশনে পাসওয়ার্ড আপডেট
+        const updateResult = await accountsCollection.updateOne(
+          {
+            $or: [
+              { userId: tokenDoc.userId, providerId: "credential" },
+              { userId: String(tokenDoc.userId), providerId: "credential" },
+            ],
+          },
+          {
+            $set: {
+              password: hashedPassword,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        // যদি অ্যাকাউন্ট কালেকশনে এখনও কোনো রেকর্ড না থাকে, তবে নতুন ক্রেডেনশিয়াল অ্যাকাউন্ট তৈরি করা
+        if (updateResult.matchedCount === 0) {
+          await accountsCollection.insertOne({
+            userId: tokenDoc.userId,
+            accountId: String(tokenDoc.userId),
+            providerId: "credential",
+            password: hashedPassword,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+
+        // ব্যবহৃত টোকেন মুছে ফেলা
+        await verificationTokensCollection.deleteOne({ _id: tokenDoc._id });
+
+        // ইউজারকে সতর্কবার্তা নোটিফিকেশন প্রেরণ
+        const user = await usersCollection.findOne({ _id: tokenDoc.userId });
+        if (user) {
+          sendPasswordChangedNotification({
+            to: user.email,
+            name: user.name,
+          }).catch((e) => console.error("Notification email error:", e));
+        }
+
+        res.json({
+          success: true,
+          message:
+            "পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে! এখন নতুন পাসওয়ার্ড দিয়ে লগইন করুন।",
+        });
+      } catch (error) {
+        console.error("Reset password API error:", error);
+        res.status(500).json({
+          success: false,
+          message: "পাসওয়ার্ড রিসেট করতে সমস্যা হয়েছে।",
           error: error.message,
         });
       }
