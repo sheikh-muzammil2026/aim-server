@@ -58,6 +58,10 @@ async function run() {
     const verificationTokensCollection =
       database.collection("verification_tokens");
 
+    // Administration Module Routes (User & Role Management)
+    const administrationRoutes = require("./administration");
+    administrationRoutes(app, database);
+
     // শিক্ষাবর্ষ / সেশন স্যানিটাইজেশন হেল্পার (একক বছর নিশ্চিত করতে)
     const sanitizeYear = (yearStr, fallback = "") => {
       const val = yearStr || fallback;
