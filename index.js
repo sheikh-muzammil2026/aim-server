@@ -36,6 +36,17 @@ async function run() {
     // কালেকশনসমূহ
     const admissionCollection = database.collection("admissions");
     const countersCollection = database.collection("counters");
+    /**
+     * Student Document Schema:
+     * - studentId: String (e.g., "0401")
+     * - roll: String (e.g., "1", "2") - updated dynamically from merit rank on result publication
+     * - activity: "active" | "permanent_inactive" | "temporary_inactive" (default: "active")
+     * - status: "Approved"
+     * - studentNameBangla / studentNameEnglish: String
+     * - divisionPreHifz / divisionHifz / divisionAcademy: Object
+     * - officeUse: Object (recommendedClass, monthlyFee, feeCategory, etc.)
+     * - sessionYear: String
+     */
     const studentsCollection = database.collection("students");
     const deletedIdsCollection = database.collection("deleted_student_ids");
     const galleryCollection = database.collection("gallery");
@@ -704,14 +715,68 @@ async function run() {
 
         const result = await marksCollection.updateMany(filter, updateDoc);
 
+        // ২. ফলাফল প্রকাশ হলে শিক্ষার্থীদের রোল নম্বর মেধাভিত্তিক (মেধাস্থান) ডায়নামিকভাবে আপডেট করা
+        let rollsUpdatedCount = 0;
+        if (targetPublished && Array.isArray(req.body.rollUpdates) && req.body.rollUpdates.length > 0) {
+          const validRollUpdates = req.body.rollUpdates.filter(
+            (u) => u && u.studentId && u.roll !== undefined && u.roll !== null && u.roll !== ""
+          );
+
+          if (validRollUpdates.length > 0) {
+            const studentBulkOps = validRollUpdates.map(({ studentId, roll }) => ({
+              updateOne: {
+                filter: { studentId: String(studentId) },
+                update: {
+                  $set: {
+                    roll: String(roll),
+                    "officeUse.rollNumber": String(roll),
+                    updatedAt: new Date(),
+                  },
+                },
+              },
+            }));
+
+            const admissionBulkOps = validRollUpdates.map(({ studentId, roll }) => ({
+              updateOne: {
+                filter: { studentId: String(studentId) },
+                update: {
+                  $set: {
+                    roll: String(roll),
+                    "officeUse.rollNumber": String(roll),
+                    updatedAt: new Date(),
+                  },
+                },
+              },
+            }));
+
+            const [studentBulkRes] = await Promise.all([
+              studentsCollection.bulkWrite(studentBulkOps, { ordered: false }).catch((err) => {
+                console.error("Student bulkWrite error during result publish:", err);
+                return { modifiedCount: 0 };
+              }),
+              admissionCollection.bulkWrite(admissionBulkOps, { ordered: false }).catch((err) => {
+                console.error("Admission bulkWrite error during result publish:", err);
+                return { modifiedCount: 0 };
+              }),
+            ]);
+
+            rollsUpdatedCount = studentBulkRes.modifiedCount || 0;
+          }
+        }
+
         res.status(200).json({
           success: true,
           message: `ফলাফল সফলভাবে ${
             targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
-          } করা হয়েছে।`,
+          } করা হয়েছে।${
+            rollsUpdatedCount > 0
+              ? ` এবং ${rollsUpdatedCount} জন শিক্ষার্থীর রোল মেধাস্থান অনুযায়ী আপডেট করা হয়েছে।`
+              : ""
+          }`,
           isPublished: targetPublished,
           matchedCount: result.matchedCount,
           modifiedCount: result.modifiedCount,
+          rollsUpdatedCount,
         });
       } catch (error) {
         console.error("Result publish toggle error:", error);
@@ -867,7 +932,7 @@ async function run() {
 
         const targetYear = sanitizeYear(year, "২০২৬");
 
-        // ১. ডায়নামিক ফিল্টার অবজেক্ট দিয়ে ওই ক্লাসের Approved শিক্ষার্থীদের খুঁজে বের করা
+        // ১. ডায়নামিক ফিল্টার অবজেক্ট দিয়ে ওই ক্লাসের Approved এবং Active শিক্ষার্থীদের খুঁজে বের করা
         const studentQuery = {
           $or: [
             { "divisionAcademy.class": className },
@@ -875,6 +940,7 @@ async function run() {
             { "divisionPreHifz.class": className },
           ],
           status: { $regex: /^approved$/i },
+          activity: "active",
         };
 
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
@@ -886,7 +952,7 @@ async function run() {
 
         const students = await studentsCollection
           .find(studentQuery)
-          .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+          .sort({ roll: 1, studentId: 1 })
           .collation({ locale: "en", numericOrdering: true })
           .skip(skip)
           .limit(limitNum)
@@ -1166,15 +1232,172 @@ async function run() {
           );
         };
 
+        const studentClass = getStudentClass(student);
+
+        // মোট নম্বর (Total Marks) এর ভিত্তিতে ক্লাসের মেধাস্থান (Merit Position) হিসাব করা
+        let meritPosition = "-";
+        try {
+          if (studentClass && studentClass !== "N/A") {
+            const classStudentQuery = {
+              $or: [
+                { "divisionAcademy.class": studentClass },
+                { "divisionHifz.class": studentClass },
+                { "divisionPreHifz.class": studentClass },
+                { "officeUse.recommendedClass": studentClass },
+                { class: studentClass },
+              ],
+              status: { $regex: /^approved$/i },
+              activity: "active",
+            };
+
+            const [allClassStudents, allClassMarks] = await Promise.all([
+              studentsCollection.find(classStudentQuery).toArray(),
+              marksCollection
+                .find({
+                  class: studentClass,
+                  year: { $regex: new RegExp(`^${targetYear}`) },
+                })
+                .toArray(),
+            ]);
+
+            // মার্কস গ্রুপ করা studentId দিয়ে
+            const marksByStudent = {};
+            allClassMarks.forEach((m) => {
+              const sid = String(m.studentId);
+              if (!marksByStudent[sid]) marksByStudent[sid] = [];
+              marksByStudent[sid].push(m);
+            });
+
+            const getSubjectPoint = (mark) => {
+              const num = typeof mark === "number" ? mark : parseFloat(mark) || 0;
+              if (num >= 80) return 5.0;
+              if (num >= 70) return 4.0;
+              if (num >= 60) return 3.0;
+              if (num >= 50) return 2.0;
+              if (num >= 40) return 1.0;
+              return 0.0;
+            };
+
+            const studentCalculations = [];
+
+            allClassStudents.forEach((cs) => {
+              const sid = String(cs.studentId);
+              const studentSubjectMarks = marksByStudent[sid] || [];
+              if (studentSubjectMarks.length === 0) return;
+
+              let totalMarks = 0;
+              let totalPoints = 0;
+              let absentSubsCount = 0;
+              let hasFailedSub = false;
+
+              studentSubjectMarks.forEach((item) => {
+                let termData = {};
+                if (currentExam === "term1" || currentExam === "১ম সাময়িক পরীক্ষা") {
+                  termData = item.term1 || item["১ম সাময়িক পরীক্ষা"] || {};
+                } else if (currentExam === "term2" || currentExam === "২য় সাময়িক পরীক্ষা") {
+                  termData = item.term2 || item["২য় সাময়িক পরীক্ষা"] || {};
+                } else if (currentExam === "annual" || currentExam === "বার্ষিক পরীক্ষা") {
+                  termData = item.annual || item["বার্ষিক পরীক্ষা"] || {};
+                } else {
+                  termData = item[currentExam] || item.term1 || {};
+                }
+
+                const isAbsent =
+                  Boolean(termData.isAbsent) ||
+                  termData.exam === "A" ||
+                  termData.exam === "ABS" ||
+                  termData.exam === "অনুঃ" ||
+                  termData.ct === "A" ||
+                  termData.ct === "ABS" ||
+                  termData.ct === "অনুঃ";
+
+                const ct = parseFloat(termData.ct) || 0;
+                const exam = parseFloat(termData.exam) || 0;
+                const total = isAbsent ? 0 : ct + exam;
+
+                if (isAbsent) {
+                  absentSubsCount++;
+                  hasFailedSub = true;
+                } else if (total < 40) {
+                  hasFailedSub = true;
+                  totalMarks += total;
+                } else {
+                  totalMarks += total;
+                  totalPoints += getSubjectPoint(total);
+                }
+              });
+
+              const totalSubs = studentSubjectMarks.length;
+              const isAbsentAll = absentSubsCount === totalSubs;
+              const isPartialAbsent = absentSubsCount > 0 && absentSubsCount < totalSubs;
+              const gpa =
+                totalSubs > 0 && !hasFailedSub && !isAbsentAll && !isPartialAbsent
+                  ? Math.min(5.0, totalPoints / totalSubs)
+                  : 0.0;
+
+              const isPassed = !hasFailedSub && !isAbsentAll && !isPartialAbsent;
+
+              studentCalculations.push({
+                studentId: sid,
+                roll: cs.roll || "999999",
+                totalMarks,
+                gpa,
+                isPassed,
+              });
+            });
+
+            // ১. শুধুমাত্র উত্তীর্ণ শিক্ষার্থীদের মোট নম্বর (Total Marks) অনুযায়ী সাজানো
+            const passedStudents = studentCalculations
+              .filter((sc) => sc.isPassed)
+              .sort((a, b) => {
+                // ১ম ধাপ: মোট নম্বর (অবতরণ ক্রম)
+                const markDiff = b.totalMarks - a.totalMarks;
+                if (markDiff !== 0) return markDiff;
+
+                // টাই-ব্রেকিং ১: GPA (অবতরণ ক্রম)
+                const gpaDiff = b.gpa - a.gpa;
+                if (Math.abs(gpaDiff) > 0.001) return gpaDiff;
+
+                // টাই-ব্রেকিং ২: পূর্ববর্তী রোল (আরোহণ ক্রম)
+                const rollA = parseInt(a.roll, 10) || 999999;
+                const rollB = parseInt(b.roll, 10) || 999999;
+                return rollA - rollB;
+              });
+
+            // ২. মেধাস্থান নির্ধারণ (টাই হলে একই মোট নম্বরে একই মেধাস্থান)
+            const meritRankMap = new Map();
+            passedStudents.forEach((st, idx) => {
+              if (idx > 0) {
+                const prev = passedStudents[idx - 1];
+                if (st.totalMarks === prev.totalMarks) {
+                  meritRankMap.set(st.studentId, meritRankMap.get(prev.studentId));
+                } else {
+                  meritRankMap.set(st.studentId, idx + 1);
+                }
+              } else {
+                meritRankMap.set(st.studentId, 1);
+              }
+            });
+
+            const currentSid = String(student.studentId);
+            if (meritRankMap.has(currentSid)) {
+              meritPosition = meritRankMap.get(currentSid);
+            }
+          }
+        } catch (meritErr) {
+          console.error("Error calculating student merit position:", meritErr);
+        }
+
         res.status(200).json({
           success: true,
           isPublished: isPublished,
           year: targetYear,
+          meritPosition: meritPosition,
           student: {
             name:
               student.studentNameBangla || student.studentNameEnglish || "N/A",
             studentId: student.studentId,
-            class: getStudentClass(student),
+            class: studentClass,
             roll: student.roll || student.officeUse?.rollNumber || "N/A",
             fatherNameBangla:
               student.fatherNameBangla || student.guardianName || "",
@@ -1342,12 +1565,29 @@ async function run() {
           academyType,
           type,
           feeCategory,
+          activity,
           page,
           limit,
         } = req.query;
 
         // ১. ডায়নামিক ফিল্টার অবজেক্ট
         const andClauses = [];
+
+        // অ্যাক্টিভিটি ফিল্টার (গ্লোবাল ডিফল্ট: শুধুমাত্র active শিক্ষার্থী)
+        if (activity && activity !== "all") {
+          if (activity === "inactive") {
+            andClauses.push({
+              activity: { $in: ["permanent_inactive", "temporary_inactive"] },
+            });
+          } else {
+            andClauses.push({
+              activity: { $regex: new RegExp(`^${activity.trim()}$`, "i") },
+            });
+          }
+        } else if (!activity) {
+          // STRICT GLOBAL DEFAULT: শুধুমাত্র active শিক্ষার্থীরা আসবে
+          andClauses.push({ activity: "active" });
+        }
 
         if (status) {
           andClauses.push({
@@ -1409,7 +1649,6 @@ async function run() {
             $or: [
               { studentNameBangla: searchRegex },
               { studentNameEnglish: searchRegex },
-              { "officeUse.rollNumber": searchRegex },
               { studentId: searchRegex },
             ],
           });
@@ -1417,7 +1656,7 @@ async function run() {
 
         const filter = andClauses.length > 0 ? { $and: andClauses } : {};
 
-        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী সর্টিং (স্বভাবিক গাণিতিক সর্টিং)
+        // ২. ডাটাবেজ থেকে ডাটা খোঁজা এবং রোল নম্বর অনুযায়ী গাণিতিক সর্টিং (numeric ordering)
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const limitNum = Math.max(1, parseInt(limit, 10) || 20);
         const skip = (pageNum - 1) * limitNum;
@@ -1427,7 +1666,7 @@ async function run() {
 
         const students = await studentsCollection
           .find(filter)
-          .sort({ roll: 1, "officeUse.rollNumber": 1, studentId: 1 })
+          .sort({ roll: 1, studentId: 1 })
           .collation({ locale: "en", numericOrdering: true })
           .skip(skip)
           .limit(limitNum)
@@ -1514,7 +1753,10 @@ async function run() {
         const students = await studentsCollection
           .find({
             $or: [{ _id: { $in: objectIds } }, { studentId: { $in: ids } }],
+            activity: "active",
           })
+          .sort({ roll: 1, studentId: 1 })
+          .collation({ locale: "en", numericOrdering: true })
           .toArray();
 
         // ২. রুটিন খোঁজা
@@ -2010,6 +2252,73 @@ async function run() {
       }
     });
 
+    // ৩. শিক্ষার্থীর অ্যাক্টিভিটি স্ট্যাটাস (active, permanent_inactive, temporary_inactive) আপডেট করার API
+    app.patch("/api/students/:id/activity", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { activity } = req.body;
+
+        const allowedActivities = [
+          "active",
+          "permanent_inactive",
+          "temporary_inactive",
+        ];
+
+        if (!activity || !allowedActivities.includes(activity)) {
+          return res.status(400).json({
+            success: false,
+            message: `অকার্যকর অ্যাক্টিভিটি স্ট্যাটাস। গ্রহণযোগ্য মান: ${allowedActivities.join(", ")}`,
+          });
+        }
+
+        let filter;
+        if (ObjectId.isValid(id)) {
+          filter = { $or: [{ _id: new ObjectId(id) }, { studentId: String(id) }] };
+        } else {
+          filter = { studentId: String(id) };
+        }
+
+        const student = await studentsCollection.findOne(filter);
+        if (!student) {
+          return res.status(404).json({
+            success: false,
+            message: "শিক্ষার্থী পাওয়া যায়নি।",
+          });
+        }
+
+        const updateDoc = {
+          $set: {
+            activity,
+            updatedAt: new Date(),
+          },
+        };
+
+        await studentsCollection.updateOne({ _id: student._id }, updateDoc);
+
+        // Sync to admissionCollection if studentId exists
+        if (student.studentId) {
+          await admissionCollection.updateOne(
+            { studentId: student.studentId },
+            { $set: { activity, updatedAt: new Date() } }
+          );
+        }
+
+        res.status(200).json({
+          success: true,
+          message: `শিক্ষার্থীর স্ট্যাটাস সফলভাবে '${activity}' করা হয়েছে।`,
+          activity,
+          studentId: student.studentId,
+        });
+      } catch (error) {
+        console.error("Student Activity Update Error:", error);
+        res.status(500).json({
+          success: false,
+          message: "সার্ভারে স্ট্যাটাস পরিবর্তন করতে সমস্যা হয়েছে।",
+          error: error.message,
+        });
+      }
+    });
+
     // ==========================================
     // ৩. ভর্তি (Admissions) সম্পর্কিত APIs
     // ==========================================
@@ -2115,7 +2424,10 @@ async function run() {
           if (status === "Approved") {
             // Copy/update in studentsCollection
             const studentFilter = { studentId: updatedStudent.studentId };
-            const studentDoc = { ...updatedStudent };
+            const studentDoc = {
+              ...updatedStudent,
+              activity: updatedStudent.activity || "active",
+            };
             delete studentDoc._id; // Ensure we don't duplicate/change original _id
 
             await studentsCollection.updateOne(
@@ -2269,7 +2581,10 @@ async function run() {
             updatedAdmission.studentId
           ) {
             const studentFilter = { studentId: updatedAdmission.studentId };
-            const studentDoc = { ...updatedAdmission };
+            const studentDoc = {
+              ...updatedAdmission,
+              activity: updatedAdmission.activity || "active",
+            };
             delete studentDoc._id; // Ensure we don't try to change original _id
 
             await studentsCollection.updateOne(
@@ -3255,9 +3570,11 @@ async function run() {
 
     app.get("/api/seat-plans/summary", async (req, res) => {
       try {
-        // ১. স্টুডেন্টদের তালিকা খোঁজা (Approved স্ট্যাটাসসহ)
+        // ১. স্টুডেন্টদের তালিকা খোঁজা (Approved এবং Active স্ট্যাটাসসহ, রোল অনুযায়ী সর্ট)
         const students = await studentsCollection
-          .find({ status: "Approved" })
+          .find({ status: "Approved", activity: "active" })
+          .sort({ roll: 1, studentId: 1 })
+          .collation({ locale: "en", numericOrdering: true })
           .toArray();
 
         // ২. seat_plan কালেকশন থেকে ডাটা নিয়ে আসা
@@ -3665,9 +3982,10 @@ async function run() {
           });
         }
 
-        // ১. স্টুডেন্টদের তালিকা খোঁজা (নির্দিষ্ট ক্লাস ও Approved স্ট্যাটাস)
+        // ১. স্টুডেন্টদের তালিকা খোঁজা (নির্দিষ্ট ক্লাস, Approved এবং Active স্ট্যাটাস)
         const query = {
           status: "Approved",
+          activity: "active",
           $or: [
             {
               "divisionPreHifz.active": true,
@@ -3682,7 +4000,11 @@ async function run() {
           ],
         };
 
-        const students = await studentsCollection.find(query).toArray();
+        const students = await studentsCollection
+          .find(query)
+          .sort({ roll: 1, studentId: 1 })
+          .collation({ locale: "en", numericOrdering: true })
+          .toArray();
 
         // ২. রুটিন ও সাবজেক্ট শিডিউল খোঁজা
         const routine = await routinesCollection.findOne({
