@@ -36,17 +36,7 @@ async function run() {
     // কালেকশনসমূহ
     const admissionCollection = database.collection("admissions");
     const countersCollection = database.collection("counters");
-    /**
-     * Student Document Schema:
-     * - studentId: String (e.g., "0401")
-     * - roll: String (e.g., "1", "2") - updated dynamically from merit rank on result publication
-     * - activity: "active" | "permanent_inactive" | "temporary_inactive" (default: "active")
-     * - status: "Approved"
-     * - studentNameBangla / studentNameEnglish: String
-     * - divisionPreHifz / divisionHifz / divisionAcademy: Object
-     * - officeUse: Object (recommendedClass, monthlyFee, feeCategory, etc.)
-     * - sessionYear: String
-     */
+
     const studentsCollection = database.collection("students");
     const deletedIdsCollection = database.collection("deleted_student_ids");
     const galleryCollection = database.collection("gallery");
@@ -766,13 +756,11 @@ async function run() {
 
         res.status(200).json({
           success: true,
-          message: `ফলাফল সফলভাবে ${
-            targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
-          } করা হয়েছে।${
-            rollsUpdatedCount > 0
+          message: `ফলাফল সফলভাবে ${targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
+            } করা হয়েছে।${rollsUpdatedCount > 0
               ? ` এবং ${rollsUpdatedCount} জন শিক্ষার্থীর রোল মেধাস্থান অনুযায়ী আপডেট করা হয়েছে।`
               : ""
-          }`,
+            }`,
           isPublished: targetPublished,
           matchedCount: result.matchedCount,
           modifiedCount: result.modifiedCount,
@@ -4173,7 +4161,7 @@ async function run() {
         try {
           const parsed = new URL(origin);
           return `${parsed.protocol}//${parsed.host}`;
-        } catch (_) {}
+        } catch (_) { }
       }
       return (
         process.env.CLIENT_BASE_URL ||
