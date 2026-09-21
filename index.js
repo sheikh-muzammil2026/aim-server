@@ -27,10 +27,27 @@ const client = new MongoClient(uri, {
   },
 });
 
+const dns = require("node:dns");
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch (_) {}
+
 async function run() {
   try {
-    // ডাটাবেজ কানেকশন
-    await client.connect();
+    // ডাটাবেজ কানেকশন (স্বয়ংক্রিয় রিট্রাই সহ)
+    let connected = false;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        await client.connect();
+        connected = true;
+        console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
+        break;
+      } catch (connErr) {
+        console.warn(`MongoDB কানেকশন প্রচেষ্টা ${attempt} ব্যর্থ: ${connErr.message}. ৩ সেকেন্ড পর পুনরায় চেষ্টা করা হচ্ছে...`);
+        if (attempt === 5) throw connErr;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
     const database = client.db("aimhabiganj");
 
     // কালেকশনসমূহ
