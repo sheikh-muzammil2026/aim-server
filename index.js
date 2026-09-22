@@ -2729,6 +2729,78 @@ async function run() {
     // ৬. ফাইনান্স (Income & Expense) সম্পর্কিত APIs
     // ==========================================
 
+    // ডাইনামিক রসিদ ও ভাউচার আইডি জেনারেশন হেল্পার
+    const getNextFinanceId = async (type = "income", dateStr) => {
+      let yy, mm;
+      if (typeof dateStr === "string" && dateStr.includes("-")) {
+        const parts = dateStr.split("-");
+        if (parts.length >= 2) {
+          yy = parts[0].trim().slice(-2);
+          mm = parts[1].trim().padStart(2, "0");
+        }
+      }
+      if (!yy || !mm) {
+        const now = new Date();
+        yy = String(now.getFullYear()).slice(-2);
+        mm = String(now.getMonth() + 1).padStart(2, "0");
+      }
+
+      const isIncome = type === "income";
+      const prefix = isIncome ? `INC-${yy}${mm}` : `EXP-${yy}${mm}`;
+      const col = isIncome ? financeIncomesCollection : financeExpensesCollection;
+      const idField = isIncome ? "receiptNo" : "voucherNo";
+
+      const existingDocs = await col
+        .find(
+          { [idField]: { $regex: `^${prefix}` } },
+          { projection: { [idField]: 1 } },
+        )
+        .toArray();
+
+      let maxCounter = 0;
+      if (existingDocs && existingDocs.length > 0) {
+        for (const doc of existingDocs) {
+          const val = doc[idField];
+          if (val && typeof val === "string" && val.startsWith(prefix)) {
+            const suffix = val.substring(prefix.length);
+            const num = parseInt(suffix, 10);
+            if (!isNaN(num) && num > maxCounter) {
+              maxCounter = num;
+            }
+          }
+        }
+      }
+
+      let candidateCounter = maxCounter + 1;
+      let candidateId = `${prefix}${String(candidateCounter).padStart(4, "0")}`;
+
+      while (await col.findOne({ [idField]: candidateId })) {
+        candidateCounter++;
+        candidateId = `${prefix}${String(candidateCounter).padStart(4, "0")}`;
+      }
+
+      return candidateId;
+    };
+
+    // ০. অটো রসিদ / ভাউচার নম্বর জেনারেট করার API
+    app.get("/api/finance/next-receipt-no", async (req, res) => {
+      try {
+        const { date, type = "income" } = req.query;
+        const nextId = await getNextFinanceId(type, date);
+        res.json({
+          success: true,
+          nextReceiptNo: nextId,
+          type,
+        });
+      } catch (error) {
+        console.error("Error generating next finance ID:", error);
+        res.status(500).json({
+          success: false,
+          message: "রসিদ নম্বর জেনারেট করতে সমস্যা হয়েছে।",
+        });
+      }
+    });
+
     // ১. আয় এন্ট্রি করার API
     app.post("/api/finance/income", async (req, res) => {
       try {
@@ -2762,8 +2834,13 @@ async function run() {
         );
         const parsedDiscount = parseFloat(discount) || 0;
         const totalIncome = itemsTotal - parsedDiscount;
-        const finalReceiptNo =
-          receiptNo || "INC-" + Date.now().toString().slice(-9);
+        let finalReceiptNo = receiptNo ? String(receiptNo).trim() : "";
+        if (
+          !finalReceiptNo ||
+          (await financeIncomesCollection.findOne({ receiptNo: finalReceiptNo }))
+        ) {
+          finalReceiptNo = await getNextFinanceId("income", date);
+        }
 
         const newIncome = {
           receiptNo: finalReceiptNo,
@@ -2831,8 +2908,13 @@ async function run() {
         );
         const parsedAdvance = parseFloat(advanceAmount) || 0;
         const balance = parsedAdvance - totalExpense;
-        const finalVoucherNo =
-          voucherNo || "EXP-" + Date.now().toString().slice(-9);
+        let finalVoucherNo = voucherNo ? String(voucherNo).trim() : "";
+        if (
+          !finalVoucherNo ||
+          (await financeExpensesCollection.findOne({ voucherNo: finalVoucherNo }))
+        ) {
+          finalVoucherNo = await getNextFinanceId("expense", date);
+        }
 
         const newExpense = {
           voucherNo: finalVoucherNo,
@@ -2988,9 +3070,9 @@ async function run() {
         const buildFilter = (isIncome) => {
           const filter = {};
 
-          if (status) {
+          if (status && status !== "all") {
             filter.status = status;
-          } else {
+          } else if (status !== "all") {
             filter.status = { $ne: "pending" };
           }
 
