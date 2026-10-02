@@ -83,6 +83,18 @@ async function run() {
     const administrationRoutes = require("./administration");
     administrationRoutes(app, database);
 
+    // Notices Management & Ticker Routes
+    const noticesRoutes = require("./notices");
+    noticesRoutes(app, database);
+
+    // Smart Classroom Module Routes
+    const smartClassroomRoutes = require("./smart-classroom");
+    smartClassroomRoutes(app, database);
+
+    // Parent Portal & Attendance Module Routes
+    const parentRoutes = require("./parent");
+    parentRoutes(app, database);
+
     // শিক্ষাবর্ষ / সেশন স্যানিটাইজেশন হেল্পার (একক বছর নিশ্চিত করতে)
     const sanitizeYear = (yearStr, fallback = "") => {
       const val = yearStr || fallback;
