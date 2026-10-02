@@ -18,8 +18,9 @@ const uri = process.env.MONGODB_URI;
 const allowedOrigins = [
   "https://aimpurbachal.com",
   "https://www.aimpurbachal.com",
+  "https://api.aimpurbachal.com",
   "http://localhost:3000",
-  "http://localhost:5173",
+  "http://localhost:5000",
 ];
 
 const corsOptions = {
