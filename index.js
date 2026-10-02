@@ -3067,7 +3067,7 @@ async function run() {
     // ৬. ফাইনান্স (Income & Expense) সম্পর্কিত APIs
     // ==========================================
 
-    // ডাইনামিক রসিদ ও ভাউচার আইডি জেনারেশন হেল্পার
+    // ডাইনামিক রসিদ ও ভাউচার আইডি জেনারেশন হেল্পার (EXP-MMYY<Serial> ও INC-MMYY<Serial>)
     const getNextFinanceId = async (type = "income", dateStr) => {
       let yy, mm;
       if (typeof dateStr === "string" && dateStr.includes("-")) {
@@ -3084,36 +3084,54 @@ async function run() {
       }
 
       const isIncome = type === "income";
-      const prefix = isIncome ? `INC-${yy}${mm}` : `EXP-${yy}${mm}`;
+      // ফরম্যাট: EXP-MMYY<Serial> অথবা INC-MMYY<Serial> (e.g. EXP-10260007)
+      const prefix = isIncome ? `INC-${mm}${yy}` : `EXP-${mm}${yy}`;
       const col = isIncome
         ? financeIncomesCollection
         : financeExpensesCollection;
       const idField = isIncome ? "receiptNo" : "voucherNo";
 
-      const existingDocs = await col
-        .find(
-          { [idField]: { $regex: `^${prefix}` } },
-          { projection: { [idField]: 1 } },
-        )
+      // পূর্ববর্তী ভাউচার/রসিদ থেকে সিরিয়াল নম্বর এক্সট্র্যাক্ট করার হেল্পার
+      const extractSerial = (val) => {
+        if (!val || typeof val !== "string") return 0;
+        // EXP-MMYY<serial>, EXP-YYMM<serial>, INC-MMYY<serial>, INC-YYMM<serial>
+        const m = val.match(/^(?:EXP|INC)-\d{4}(\d+)$/i);
+        if (m) {
+          const num = parseInt(m[1], 10);
+          if (!isNaN(num) && num < 1000000) return num;
+        }
+        // ট্রেইলিং ডিজিটস (e.g. EXP-0001, VOUCH-0001 ইত্যাদি)
+        const m2 = val.match(/(\d+)$/);
+        if (m2) {
+          const num = parseInt(m2[1], 10);
+          if (!isNaN(num) && num < 1000000) return num;
+        }
+        return 0;
+      };
+
+      // ডেটাবেজ থেকে সর্বশেষ পূর্ববর্তী রেকর্ড(সমূহ) নেওয়া
+      const recentDocs = await col
+        .find({ [idField]: { $exists: true, $nin: [null, ""] } })
+        .sort({ _id: -1 })
+        .limit(20)
         .toArray();
 
-      let maxCounter = 0;
-      if (existingDocs && existingDocs.length > 0) {
-        for (const doc of existingDocs) {
-          const val = doc[idField];
-          if (val && typeof val === "string" && val.startsWith(prefix)) {
-            const suffix = val.substring(prefix.length);
-            const num = parseInt(suffix, 10);
-            if (!isNaN(num) && num > maxCounter) {
-              maxCounter = num;
-            }
+      let lastSerial = 0;
+      if (recentDocs && recentDocs.length > 0) {
+        for (const doc of recentDocs) {
+          const s = extractSerial(doc[idField]);
+          if (s > 0) {
+            lastSerial = s;
+            break;
           }
         }
       }
 
-      let candidateCounter = maxCounter + 1;
+      // পূর্ববর্তী ভাউচার নম্বর থেকে ধারাবাহিক পরবর্তী সিরিয়াল (রিসেট না হয়ে সিকোয়েন্স বজায় থাকবে)
+      let candidateCounter = lastSerial + 1;
       let candidateId = `${prefix}${String(candidateCounter).padStart(4, "0")}`;
 
+      // ডেটাবেজে ইউনিকনেস নিশ্চিত করতে সংঘর্ষ প্রতিরোধ লুপ
       while (await col.findOne({ [idField]: candidateId })) {
         candidateCounter++;
         candidateId = `${prefix}${String(candidateCounter).padStart(4, "0")}`;
@@ -3303,19 +3321,34 @@ async function run() {
       try {
         const { month, year } = req.query;
 
-        if (!month || !year) {
-          return res.status(400).json({
-            success: false,
-            message: "মাস এবং বছর সরবরাহ করা আবশ্যক।",
-          });
+        // Build filter for period
+        const periodIncomeFilter = { status: { $ne: "pending" } };
+        const periodExpenseFilter = { status: { $ne: "pending" } };
+
+        let targetMonthLabel = "all";
+
+        if (year && year !== "all") {
+          if (month && month !== "all") {
+            const formattedMonth = String(month).padStart(2, "0");
+            targetMonthLabel = `${year}-${formattedMonth}`;
+            periodIncomeFilter.month = targetMonthLabel;
+            periodExpenseFilter.month = targetMonthLabel;
+          } else {
+            targetMonthLabel = `${year}`;
+            periodIncomeFilter.month = { $regex: `^${year}-` };
+            periodExpenseFilter.month = { $regex: `^${year}-` };
+          }
+        } else if (month && month !== "all") {
+          const formattedMonth = String(month).padStart(2, "0");
+          targetMonthLabel = formattedMonth;
+          periodIncomeFilter.month = { $regex: `-${formattedMonth}$` };
+          periodExpenseFilter.month = { $regex: `-${formattedMonth}$` };
         }
 
-        const targetMonth = `${year}-${String(month).padStart(2, "0")}`;
-
-        // মোট আয় হিসাব
+        // মোট আয় হিসাব (Period)
         const incomeAggregation = await financeIncomesCollection
           .aggregate([
-            { $match: { month: targetMonth, status: { $ne: "pending" } } },
+            { $match: periodIncomeFilter },
             {
               $group: {
                 _id: null,
@@ -3325,10 +3358,10 @@ async function run() {
           ])
           .toArray();
 
-        // মোট ব্যয় হিসাব
+        // মোট ব্যয় হিসাব (Period)
         const expenseAggregation = await financeExpensesCollection
           .aggregate([
-            { $match: { month: targetMonth, status: { $ne: "pending" } } },
+            { $match: periodExpenseFilter },
             {
               $group: {
                 _id: null,
@@ -3342,10 +3375,29 @@ async function run() {
         const totalExpense = expenseAggregation[0]?.total || 0;
         const netBalance = totalIncome - totalExpense;
 
+        // সার্বিক (Overall all-time) মোট আয় ও ব্যয় হিসাব
+        const overallIncomeAgg = await financeIncomesCollection
+          .aggregate([
+            { $match: { status: { $ne: "pending" } } },
+            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+          ])
+          .toArray();
+
+        const overallExpenseAgg = await financeExpensesCollection
+          .aggregate([
+            { $match: { status: { $ne: "pending" } } },
+            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+          ])
+          .toArray();
+
+        const overallIncome = overallIncomeAgg[0]?.total || 0;
+        const overallExpense = overallExpenseAgg[0]?.total || 0;
+        const overallBalance = overallIncome - overallExpense;
+
         // খাত-ভিত্তিক আয়ের হিসাব
         const incomeCategoryBreakdown = await financeIncomesCollection
           .aggregate([
-            { $match: { month: targetMonth, status: { $ne: "pending" } } },
+            { $match: periodIncomeFilter },
             { $unwind: "$items" },
             {
               $group: {
@@ -3360,7 +3412,7 @@ async function run() {
         // খাত-ভিত্তিক ব্যয়ের হিসাব
         const expenseCategoryBreakdown = await financeExpensesCollection
           .aggregate([
-            { $match: { month: targetMonth, status: { $ne: "pending" } } },
+            { $match: periodExpenseFilter },
             { $unwind: "$items" },
             {
               $group: {
@@ -3372,13 +3424,22 @@ async function run() {
           ])
           .toArray();
 
+        // সক্রিয় মাসসমূহ (Active months list)
+        const activeIncomeMonths = await financeIncomesCollection.distinct("month", { status: { $ne: "pending" } });
+        const activeExpenseMonths = await financeExpensesCollection.distinct("month", { status: { $ne: "pending" } });
+        const activeMonths = Array.from(new Set([...activeIncomeMonths, ...activeExpenseMonths])).filter(Boolean).sort().reverse();
+
         res.status(200).json({
           success: true,
           data: {
-            month: targetMonth,
+            month: targetMonthLabel,
             totalIncome,
             totalExpense,
             netBalance,
+            overallIncome,
+            overallExpense,
+            overallBalance,
+            activeMonths,
             incomeBreakdown: incomeCategoryBreakdown.map((item) => ({
               head: item._id,
               amount: item.total,
