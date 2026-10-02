@@ -15,7 +15,32 @@ const port = process.env.PORT || 8000;
 const uri = process.env.MONGODB_URI;
 
 // Middleware Configurations
-app.use(cors());
+const allowedOrigins = [
+  "https://aimpurbachal.com",
+  "https://www.aimpurbachal.com",
+  "http://localhost:3000",
+  "http://localhost:5173",
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps, curl, postman)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
+  credentials: true, // Authorization header / cookies পাঠানোর জন্য
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+};
+
+app.use(cors(corsOptions));
+
+// Preflight OPTIONS requests handle করার জন্য
+app.options("*", cors(corsOptions));
+
 app.use(express.json());
 
 // MongoDB Client Setup
@@ -43,7 +68,9 @@ async function run() {
         console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
         break;
       } catch (connErr) {
-        console.warn(`MongoDB কানেকশন প্রচেষ্টা ${attempt} ব্যর্থ: ${connErr.message}. ৩ সেকেন্ড পর পুনরায় চেষ্টা করা হচ্ছে...`);
+        console.warn(
+          `MongoDB কানেকশন প্রচেষ্টা ${attempt} ব্যর্থ: ${connErr.message}. ৩ সেকেন্ড পর পুনরায় চেষ্টা করা হচ্ছে...`,
+        );
         if (attempt === 5) throw connErr;
         await new Promise((r) => setTimeout(r, 3000));
       }
@@ -73,11 +100,13 @@ async function run() {
     const teachersCollection = database.collection("teachers");
     const usersCollection = database.collection("user");
     const accountsCollection = database.collection("account");
-    const verificationTokensCollection =
-      database.collection("verification_tokens");
+    const verificationTokensCollection = database.collection(
+      "verification_tokens",
+    );
     const syllabusCollection = database.collection("syllabus");
-    const studentAttendanceCollection =
-      database.collection("students_attendance");
+    const studentAttendanceCollection = database.collection(
+      "students_attendance",
+    );
 
     // Administration Module Routes (User & Role Management)
     const administrationRoutes = require("./administration");
@@ -508,7 +537,7 @@ async function run() {
             await syllabusCollection.updateOne(
               { class: item.class },
               { $setOnInsert: item },
-              { upsert: true }
+              { upsert: true },
             );
           }
         }
@@ -610,7 +639,7 @@ async function run() {
         const result = await syllabusCollection.updateOne(
           { class: className },
           updateDoc,
-          { upsert: true }
+          { upsert: true },
         );
 
         res.status(200).json({
@@ -644,10 +673,7 @@ async function run() {
         }
 
         const filter = {
-          $or: [
-            { isPublished: { $exists: false } },
-            { isPublished: null },
-          ],
+          $or: [{ isPublished: { $exists: false } }, { isPublished: null }],
         };
 
         const updateDoc = {
@@ -738,47 +764,70 @@ async function run() {
 
         // ২. ফলাফল প্রকাশ হলে শিক্ষার্থীদের রোল নম্বর মেধাভিত্তিক (মেধাস্থান) ডায়নামিকভাবে আপডেট করা
         let rollsUpdatedCount = 0;
-        if (targetPublished && Array.isArray(req.body.rollUpdates) && req.body.rollUpdates.length > 0) {
+        if (
+          targetPublished &&
+          Array.isArray(req.body.rollUpdates) &&
+          req.body.rollUpdates.length > 0
+        ) {
           const validRollUpdates = req.body.rollUpdates.filter(
-            (u) => u && u.studentId && u.roll !== undefined && u.roll !== null && u.roll !== ""
+            (u) =>
+              u &&
+              u.studentId &&
+              u.roll !== undefined &&
+              u.roll !== null &&
+              u.roll !== "",
           );
 
           if (validRollUpdates.length > 0) {
-            const studentBulkOps = validRollUpdates.map(({ studentId, roll }) => ({
-              updateOne: {
-                filter: { studentId: String(studentId) },
-                update: {
-                  $set: {
-                    roll: String(roll),
-                    "officeUse.rollNumber": String(roll),
-                    updatedAt: new Date(),
+            const studentBulkOps = validRollUpdates.map(
+              ({ studentId, roll }) => ({
+                updateOne: {
+                  filter: { studentId: String(studentId) },
+                  update: {
+                    $set: {
+                      roll: String(roll),
+                      "officeUse.rollNumber": String(roll),
+                      updatedAt: new Date(),
+                    },
                   },
                 },
-              },
-            }));
+              }),
+            );
 
-            const admissionBulkOps = validRollUpdates.map(({ studentId, roll }) => ({
-              updateOne: {
-                filter: { studentId: String(studentId) },
-                update: {
-                  $set: {
-                    roll: String(roll),
-                    "officeUse.rollNumber": String(roll),
-                    updatedAt: new Date(),
+            const admissionBulkOps = validRollUpdates.map(
+              ({ studentId, roll }) => ({
+                updateOne: {
+                  filter: { studentId: String(studentId) },
+                  update: {
+                    $set: {
+                      roll: String(roll),
+                      "officeUse.rollNumber": String(roll),
+                      updatedAt: new Date(),
+                    },
                   },
                 },
-              },
-            }));
+              }),
+            );
 
             const [studentBulkRes] = await Promise.all([
-              studentsCollection.bulkWrite(studentBulkOps, { ordered: false }).catch((err) => {
-                console.error("Student bulkWrite error during result publish:", err);
-                return { modifiedCount: 0 };
-              }),
-              admissionCollection.bulkWrite(admissionBulkOps, { ordered: false }).catch((err) => {
-                console.error("Admission bulkWrite error during result publish:", err);
-                return { modifiedCount: 0 };
-              }),
+              studentsCollection
+                .bulkWrite(studentBulkOps, { ordered: false })
+                .catch((err) => {
+                  console.error(
+                    "Student bulkWrite error during result publish:",
+                    err,
+                  );
+                  return { modifiedCount: 0 };
+                }),
+              admissionCollection
+                .bulkWrite(admissionBulkOps, { ordered: false })
+                .catch((err) => {
+                  console.error(
+                    "Admission bulkWrite error during result publish:",
+                    err,
+                  );
+                  return { modifiedCount: 0 };
+                }),
             ]);
 
             rollsUpdatedCount = studentBulkRes.modifiedCount || 0;
@@ -787,11 +836,13 @@ async function run() {
 
         res.status(200).json({
           success: true,
-          message: `ফলাফল সফলভাবে ${targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
-            } করা হয়েছে।${rollsUpdatedCount > 0
+          message: `ফলাফল সফলভাবে ${
+            targetPublished ? "প্রকাশ" : "অপ্রকাশিত"
+          } করা হয়েছে।${
+            rollsUpdatedCount > 0
               ? ` এবং ${rollsUpdatedCount} জন শিক্ষার্থীর রোল মেধাস্থান অনুযায়ী আপডেট করা হয়েছে।`
               : ""
-            }`,
+          }`,
           isPublished: targetPublished,
           matchedCount: result.matchedCount,
           modifiedCount: result.modifiedCount,
@@ -869,7 +920,13 @@ async function run() {
      */
     app.get("/api/marks/get", async (req, res) => {
       try {
-        const { class: studentClass, subject, year, examType, term } = req.query;
+        const {
+          class: studentClass,
+          subject,
+          year,
+          examType,
+          term,
+        } = req.query;
         const currentExam = examType || term;
 
         if (!studentClass || !subject) {
@@ -939,7 +996,14 @@ async function run() {
      */
     app.get("/api/results/class", async (req, res) => {
       try {
-        const { class: className, year, term, examType, page, limit } = req.query;
+        const {
+          class: className,
+          year,
+          term,
+          examType,
+          page,
+          limit,
+        } = req.query;
         const currentExam = examType || term;
 
         if (!className) {
@@ -1239,9 +1303,12 @@ async function run() {
         }));
 
         const getStudentClass = (s) => {
-          if (s.divisionAcademy?.active && s.divisionAcademy?.class) return s.divisionAcademy.class;
-          if (s.divisionHifz?.active && s.divisionHifz?.class) return s.divisionHifz.class;
-          if (s.divisionPreHifz?.active && s.divisionPreHifz?.class) return s.divisionPreHifz.class;
+          if (s.divisionAcademy?.active && s.divisionAcademy?.class)
+            return s.divisionAcademy.class;
+          if (s.divisionHifz?.active && s.divisionHifz?.class)
+            return s.divisionHifz.class;
+          if (s.divisionPreHifz?.active && s.divisionPreHifz?.class)
+            return s.divisionPreHifz.class;
           return (
             s.divisionHifz?.class ||
             s.divisionPreHifz?.class ||
@@ -1288,7 +1355,8 @@ async function run() {
             });
 
             const getSubjectPoint = (mark) => {
-              const num = typeof mark === "number" ? mark : parseFloat(mark) || 0;
+              const num =
+                typeof mark === "number" ? mark : parseFloat(mark) || 0;
               if (num >= 80) return 5.0;
               if (num >= 70) return 4.0;
               if (num >= 60) return 3.0;
@@ -1311,11 +1379,20 @@ async function run() {
 
               studentSubjectMarks.forEach((item) => {
                 let termData = {};
-                if (currentExam === "term1" || currentExam === "১ম সাময়িক পরীক্ষা") {
+                if (
+                  currentExam === "term1" ||
+                  currentExam === "১ম সাময়িক পরীক্ষা"
+                ) {
                   termData = item.term1 || item["১ম সাময়িক পরীক্ষা"] || {};
-                } else if (currentExam === "term2" || currentExam === "২য় সাময়িক পরীক্ষা") {
+                } else if (
+                  currentExam === "term2" ||
+                  currentExam === "২য় সাময়িক পরীক্ষা"
+                ) {
                   termData = item.term2 || item["২য় সাময়িক পরীক্ষা"] || {};
-                } else if (currentExam === "annual" || currentExam === "বার্ষিক পরীক্ষা") {
+                } else if (
+                  currentExam === "annual" ||
+                  currentExam === "বার্ষিক পরীক্ষা"
+                ) {
                   termData = item.annual || item["বার্ষিক পরীক্ষা"] || {};
                 } else {
                   termData = item[currentExam] || item.term1 || {};
@@ -1348,13 +1425,18 @@ async function run() {
 
               const totalSubs = studentSubjectMarks.length;
               const isAbsentAll = absentSubsCount === totalSubs;
-              const isPartialAbsent = absentSubsCount > 0 && absentSubsCount < totalSubs;
+              const isPartialAbsent =
+                absentSubsCount > 0 && absentSubsCount < totalSubs;
               const gpa =
-                totalSubs > 0 && !hasFailedSub && !isAbsentAll && !isPartialAbsent
+                totalSubs > 0 &&
+                !hasFailedSub &&
+                !isAbsentAll &&
+                !isPartialAbsent
                   ? Math.min(5.0, totalPoints / totalSubs)
                   : 0.0;
 
-              const isPassed = !hasFailedSub && !isAbsentAll && !isPartialAbsent;
+              const isPassed =
+                !hasFailedSub && !isAbsentAll && !isPartialAbsent;
 
               studentCalculations.push({
                 studentId: sid,
@@ -1389,7 +1471,10 @@ async function run() {
               if (idx > 0) {
                 const prev = passedStudents[idx - 1];
                 if (st.totalMarks === prev.totalMarks) {
-                  meritRankMap.set(st.studentId, meritRankMap.get(prev.studentId));
+                  meritRankMap.set(
+                    st.studentId,
+                    meritRankMap.get(prev.studentId),
+                  );
                 } else {
                   meritRankMap.set(st.studentId, idx + 1);
                 }
@@ -1480,10 +1565,7 @@ async function run() {
         const existingPublishedDoc = await marksCollection.findOne({
           class: studentClass,
           year: { $regex: new RegExp(`^${academicYear}`) },
-          $or: [
-            { [`${examType}.isPublished`]: true },
-            { isPublished: true },
-          ],
+          $or: [{ [`${examType}.isPublished`]: true }, { isPublished: true }],
         });
 
         if (existingPublishedDoc && !isAdmin) {
@@ -2222,7 +2304,10 @@ async function run() {
         const updatedData = req.body;
 
         if (updatedData.sessionYear) {
-          updatedData.sessionYear = sanitizeYear(updatedData.sessionYear, "২০২৬");
+          updatedData.sessionYear = sanitizeYear(
+            updatedData.sessionYear,
+            "২০২৬",
+          );
         }
 
         // আপডেট করার সময় MongoDB-র ডিফল্ট `_id` ফিল্ডটি বাদ রাখা সুরক্ষিত
@@ -2292,7 +2377,9 @@ async function run() {
 
         let filter;
         if (ObjectId.isValid(id)) {
-          filter = { $or: [{ _id: new ObjectId(id) }, { studentId: String(id) }] };
+          filter = {
+            $or: [{ _id: new ObjectId(id) }, { studentId: String(id) }],
+          };
         } else {
           filter = { studentId: String(id) };
         }
@@ -2318,7 +2405,7 @@ async function run() {
         if (student.studentId) {
           await admissionCollection.updateOne(
             { studentId: student.studentId },
-            { $set: { activity, updatedAt: new Date() } }
+            { $set: { activity, updatedAt: new Date() } },
           );
         }
 
@@ -2401,9 +2488,13 @@ async function run() {
             presentCount,
             absentCount,
             lateCount,
-            attendanceRate: sanitizedRecords.length > 0
-              ? Math.round(((presentCount + lateCount) / sanitizedRecords.length) * 100)
-              : 0,
+            attendanceRate:
+              sanitizedRecords.length > 0
+                ? Math.round(
+                    ((presentCount + lateCount) / sanitizedRecords.length) *
+                      100,
+                  )
+                : 0,
             recordedBy: recordedBy || "admin",
             updatedAt: new Date(),
           },
@@ -2415,7 +2506,7 @@ async function run() {
         const result = await studentAttendanceCollection.updateOne(
           filter,
           updateDoc,
-          { upsert: true }
+          { upsert: true },
         );
 
         res.status(200).json({
@@ -2549,7 +2640,10 @@ async function run() {
         const newApplication = req.body;
 
         if (newApplication.sessionYear) {
-          newApplication.sessionYear = sanitizeYear(newApplication.sessionYear, "২০২৬");
+          newApplication.sessionYear = sanitizeYear(
+            newApplication.sessionYear,
+            "২০২৬",
+          );
         }
 
         newApplication.studentId = "Pending"; // প্রারম্ভিক অবস্থায় Pending থাকবে
@@ -2964,7 +3058,9 @@ async function run() {
 
       const isIncome = type === "income";
       const prefix = isIncome ? `INC-${yy}${mm}` : `EXP-${yy}${mm}`;
-      const col = isIncome ? financeIncomesCollection : financeExpensesCollection;
+      const col = isIncome
+        ? financeIncomesCollection
+        : financeExpensesCollection;
       const idField = isIncome ? "receiptNo" : "voucherNo";
 
       const existingDocs = await col
@@ -3054,7 +3150,9 @@ async function run() {
         let finalReceiptNo = receiptNo ? String(receiptNo).trim() : "";
         if (
           !finalReceiptNo ||
-          (await financeIncomesCollection.findOne({ receiptNo: finalReceiptNo }))
+          (await financeIncomesCollection.findOne({
+            receiptNo: finalReceiptNo,
+          }))
         ) {
           finalReceiptNo = await getNextFinanceId("income", date);
         }
@@ -3128,7 +3226,9 @@ async function run() {
         let finalVoucherNo = voucherNo ? String(voucherNo).trim() : "";
         if (
           !finalVoucherNo ||
-          (await financeExpensesCollection.findOne({ voucherNo: finalVoucherNo }))
+          (await financeExpensesCollection.findOne({
+            voucherNo: finalVoucherNo,
+          }))
         ) {
           finalVoucherNo = await getNextFinanceId("expense", date);
         }
@@ -4355,13 +4455,13 @@ async function run() {
                 const dateA = a.gregorianRaw
                   ? new Date(a.gregorianRaw)
                   : new Date(
-                    a.date.split(" ")[0].split("/").reverse().join("-"),
-                  );
+                      a.date.split(" ")[0].split("/").reverse().join("-"),
+                    );
                 const dateB = b.gregorianRaw
                   ? new Date(b.gregorianRaw)
                   : new Date(
-                    b.date.split(" ")[0].split("/").reverse().join("-"),
-                  );
+                      b.date.split(" ")[0].split("/").reverse().join("-"),
+                    );
                 return dateA - dateB;
               });
             }
@@ -4452,7 +4552,7 @@ async function run() {
           (err, key) => {
             if (err) reject(err);
             else resolve(key);
-          }
+          },
         );
       });
     }
@@ -4477,7 +4577,7 @@ async function run() {
         try {
           const parsed = new URL(origin);
           return `${parsed.protocol}//${parsed.host}`;
-        } catch (_) { }
+        } catch (_) {}
       }
       return (
         process.env.CLIENT_BASE_URL ||
@@ -4521,7 +4621,10 @@ async function run() {
         if (name !== undefined) updateFields.name = String(name).trim();
         if (image !== undefined) updateFields.image = String(image).trim();
 
-        await usersCollection.updateOne({ _id: user._id }, { $set: updateFields });
+        await usersCollection.updateOne(
+          { _id: user._id },
+          { $set: updateFields },
+        );
 
         const updatedUser = await usersCollection.findOne({ _id: user._id });
 
@@ -4603,7 +4706,7 @@ async function run() {
 
         const isCurrentValid = await verifyUserPassword(
           account.password,
-          currentPassword
+          currentPassword,
         );
         if (!isCurrentValid) {
           return res.status(400).json({
@@ -4621,7 +4724,7 @@ async function run() {
               password: newHashedPassword,
               updatedAt: new Date(),
             },
-          }
+          },
         );
 
         // সুরক্ষার জন্য নোটিফিকেশন ইমেইল প্রেরণ
@@ -4730,7 +4833,8 @@ async function run() {
           success: true,
           message:
             "নতুন ইমেইলে একটি নিশ্চিতকরণ লিংক পাঠানো হয়েছে। অনুগ্রহ করে ইনবক্স চেক করে লিংকটিতে ক্লিক করুন।",
-          verifyUrl: process.env.NODE_ENV === "development" ? verifyUrl : undefined,
+          verifyUrl:
+            process.env.NODE_ENV === "development" ? verifyUrl : undefined,
         });
       } catch (error) {
         console.error("Request email update error:", error);
@@ -4773,7 +4877,8 @@ async function run() {
           await verificationTokensCollection.deleteOne({ _id: tokenDoc._id });
           return res.status(400).json({
             success: false,
-            message: "ভেরিফিকেশন লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন অনুরোধ করুন।",
+            message:
+              "ভেরিফিকেশন লিংকের মেয়াদ শেষ হয়ে গেছে। নতুন অনুরোধ করুন।",
           });
         }
 
@@ -4783,7 +4888,7 @@ async function run() {
           // ইউজার কালেকশনে ইমেইল আপডেট
           await usersCollection.updateOne(
             { _id: tokenDoc.userId },
-            { $set: { email: newEmail, updatedAt: new Date() } }
+            { $set: { email: newEmail, updatedAt: new Date() } },
           );
 
           // অ্যাকাউন্ট কালেকশনেও ইমেইল/অ্যাকাউন্ট আইডি আপডেট (যদি credential থাকে)
@@ -4794,7 +4899,7 @@ async function run() {
                 { userId: String(tokenDoc.userId), providerId: "credential" },
               ],
             },
-            { $set: { updatedAt: new Date() } }
+            { $set: { updatedAt: new Date() } },
           );
 
           // টোকেন মুছে ফেলা
@@ -4880,7 +4985,8 @@ async function run() {
           success: true,
           message:
             "আপনার ইমেইলে একটি পাসওয়ার্ড রিসেট লিংক পাঠানো হয়েছে। অনুগ্রহ করে ইনবক্স চেক করুন।",
-          resetUrl: process.env.NODE_ENV === "development" ? resetUrl : undefined,
+          resetUrl:
+            process.env.NODE_ENV === "development" ? resetUrl : undefined,
         });
       } catch (error) {
         console.error("Forgot password API error:", error);
@@ -4950,7 +5056,7 @@ async function run() {
               password: hashedPassword,
               updatedAt: new Date(),
             },
-          }
+          },
         );
 
         // যদি অ্যাকাউন্ট কালেকশনে এখনও কোনো রেকর্ড না থাকে, তবে নতুন ক্রেডেনশিয়াল অ্যাকাউন্ট তৈরি করা
