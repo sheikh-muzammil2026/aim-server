@@ -19,28 +19,48 @@ const allowedOrigins = [
   "https://aimpurbachal.com",
   "https://www.aimpurbachal.com",
   "https://api.aimpurbachal.com",
+  "https://aimhabiganj.vercel.app",
   "http://localhost:3000",
   "http://localhost:5000",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5000",
 ];
 
 const corsOptions = {
   origin: function (origin, callback) {
     // allow requests with no origin (like mobile apps, curl, postman)
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin) {
+      return callback(null, true);
+    }
+    const cleanOrigin = origin.replace(/\/$/, "");
+    if (
+      allowedOrigins.includes(cleanOrigin) ||
+      cleanOrigin.endsWith(".aimpurbachal.com") ||
+      cleanOrigin.endsWith(".vercel.app")
+    ) {
       callback(null, true);
     } else {
-      callback(null, true);
+      callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true, // Authorization header / cookies পাঠানোর জন্য
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "x-user-email",
+    "x-user-role",
+    "Accept",
+    "Origin",
+  ],
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
 
-// Preflight OPTIONS requests handle করার জন্য
-app.options("*", cors(corsOptions));
+// Preflight OPTIONS requests handle করার জন্য (Express 5 / path-to-regexp compliant)
+app.options("{/*splat}", cors(corsOptions));
 
 app.use(express.json());
 
@@ -118,8 +138,14 @@ async function run() {
     noticesRoutes(app, database);
 
     // Smart Classroom Module Routes
-    const smartClassroomRoutes = require("./smart-classroom");
-    smartClassroomRoutes(app, database);
+    try {
+      const smartClassroomRoutes = require("./smart-classroom");
+      smartClassroomRoutes(app, database);
+    } catch (err) {
+      if (err.code !== "MODULE_NOT_FOUND") {
+        console.error("Smart Classroom routes error:", err);
+      }
+    }
 
     // Parent Portal & Attendance Module Routes
     const parentRoutes = require("./parent");
@@ -5105,6 +5131,22 @@ async function run() {
     });
 
     // console.log("MongoDB-র সাথে সফলভাবে কানেক্টেড হয়েছে! 🚀");
+
+    // গ্লোবাল এরর হ্যান্ডলার (CORS ত্রুটি সহ)
+    app.use((err, req, res, next) => {
+      if (err && err.message === "Not allowed by CORS") {
+        return res.status(403).json({
+          success: false,
+          message: "CORS Error: Origin not allowed",
+        });
+      }
+      console.error("Unhandled Server Error:", err);
+      res.status(500).json({
+        success: false,
+        message: "Internal Server Error",
+        error: err ? err.message : "Unknown error",
+      });
+    });
 
     // সার্ভার চালুকরণ (MongoDB কানেকশনের পর)
     app.listen(port, () => {
