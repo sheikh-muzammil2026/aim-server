@@ -59,8 +59,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Preflight OPTIONS requests handle করার জন্য (Express 5 / path-to-regexp compliant)
-app.options("{/*splat}", cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
@@ -3425,9 +3424,20 @@ async function run() {
           .toArray();
 
         // সক্রিয় মাসসমূহ (Active months list)
-        const activeIncomeMonths = await financeIncomesCollection.distinct("month", { status: { $ne: "pending" } });
-        const activeExpenseMonths = await financeExpensesCollection.distinct("month", { status: { $ne: "pending" } });
-        const activeMonths = Array.from(new Set([...activeIncomeMonths, ...activeExpenseMonths])).filter(Boolean).sort().reverse();
+        const activeIncomeMonths = await financeIncomesCollection.distinct(
+          "month",
+          { status: { $ne: "pending" } },
+        );
+        const activeExpenseMonths = await financeExpensesCollection.distinct(
+          "month",
+          { status: { $ne: "pending" } },
+        );
+        const activeMonths = Array.from(
+          new Set([...activeIncomeMonths, ...activeExpenseMonths]),
+        )
+          .filter(Boolean)
+          .sort()
+          .reverse();
 
         res.status(200).json({
           success: true,
