@@ -19,12 +19,27 @@ const allowedOrigins = [
   "https://aimpurbachal.com",
   "https://www.aimpurbachal.com",
   "https://api.aimpurbachal.com",
+  "https://aimhabiganj.com",
+  "https://www.aimhabiganj.com",
   "https://aimhabiganj.vercel.app",
   "http://localhost:3000",
   "http://localhost:5000",
+  "http://localhost:5173",
   "http://127.0.0.1:3000",
   "http://127.0.0.1:5000",
+  "http://127.0.0.1:5173",
 ];
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  const cleanOrigin = origin.replace(/\/$/, "");
+  return (
+    allowedOrigins.includes(cleanOrigin) ||
+    cleanOrigin.endsWith(".aimpurbachal.com") ||
+    cleanOrigin.endsWith(".aimhabiganj.com") ||
+    cleanOrigin.endsWith(".vercel.app")
+  );
+};
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -32,15 +47,10 @@ const corsOptions = {
     if (!origin) {
       return callback(null, true);
     }
-    const cleanOrigin = origin.replace(/\/$/, "");
-    if (
-      allowedOrigins.includes(cleanOrigin) ||
-      cleanOrigin.endsWith(".aimpurbachal.com") ||
-      cleanOrigin.endsWith(".vercel.app")
-    ) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(null, false);
     }
   },
   credentials: true, // Authorization header / cookies পাঠানোর জন্য
@@ -53,13 +63,35 @@ const corsOptions = {
     "x-user-role",
     "Accept",
     "Origin",
+    "Cache-Control",
+    "Pragma",
+    "X-CSRF-Token",
   ],
   optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));
 
-app.use(cors(corsOptions));
+// Explicit preflight handler for any route
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    const origin = req.headers.origin;
+    if (origin && isOriginAllowed(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      );
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, X-Requested-With, x-user-email, x-user-role, Accept, Origin, Cache-Control, Pragma, X-CSRF-Token"
+      );
+    }
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 app.use(express.json());
 
@@ -5205,6 +5237,11 @@ async function run() {
 
     // গ্লোবাল এরর হ্যান্ডলার (CORS ত্রুটি সহ)
     app.use((err, req, res, next) => {
+      const origin = req.headers.origin;
+      if (origin && isOriginAllowed(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+      }
       if (err && err.message === "Not allowed by CORS") {
         return res.status(403).json({
           success: false,
@@ -5212,7 +5249,7 @@ async function run() {
         });
       }
       console.error("Unhandled Server Error:", err);
-      res.status(500).json({
+      res.status(err.status || 500).json({
         success: false,
         message: "Internal Server Error",
         error: err ? err.message : "Unknown error",
