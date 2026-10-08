@@ -169,7 +169,7 @@ function financeRoutes(collections) {
         totalIncome,
         paymentMethod: paymentMethod || "Cash",
         description: description || "",
-        status: "pending",
+        status: "approved",
         createdAt: new Date(),
       };
 
@@ -328,7 +328,71 @@ function financeRoutes(collections) {
 
       const totalIncome = incomeAggregation[0]?.total || 0;
       const totalExpense = expenseAggregation[0]?.total || 0;
-      const netBalance = totalIncome - totalExpense;
+
+      // প্রারম্ভিক ব্যালেন্স (Opening Balance): পূর্ববর্তী মাসগুলোর নিট উদ্বৃত্ত
+      let openingBalance = 0;
+      if (targetMonthLabel && /^\d{4}-\d{2}$/.test(targetMonthLabel)) {
+        const priorIncomeAgg = await financeIncomesCollection
+          .aggregate([
+            {
+              $match: {
+                month: { $lt: targetMonthLabel },
+                status: { $ne: "pending" },
+              },
+            },
+            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+          ])
+          .toArray();
+
+        const priorExpenseAgg = await financeExpensesCollection
+          .aggregate([
+            {
+              $match: {
+                month: { $lt: targetMonthLabel },
+                status: { $ne: "pending" },
+              },
+            },
+            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+          ])
+          .toArray();
+
+        const priorIncome = priorIncomeAgg[0]?.total || 0;
+        const priorExpense = priorExpenseAgg[0]?.total || 0;
+        openingBalance = priorIncome - priorExpense;
+      } else if (year && year !== "all" && (!month || month === "all")) {
+        const priorIncomeAgg = await financeIncomesCollection
+          .aggregate([
+            {
+              $match: {
+                month: { $lt: `${year}-01` },
+                status: { $ne: "pending" },
+              },
+            },
+            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+          ])
+          .toArray();
+
+        const priorExpenseAgg = await financeExpensesCollection
+          .aggregate([
+            {
+              $match: {
+                month: { $lt: `${year}-01` },
+                status: { $ne: "pending" },
+              },
+            },
+            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+          ])
+          .toArray();
+
+        const priorIncome = priorIncomeAgg[0]?.total || 0;
+        const priorExpense = priorExpenseAgg[0]?.total || 0;
+        openingBalance = priorIncome - priorExpense;
+      }
+
+      // ব্যয়যোগ্য মোট তহবিল = প্রারম্ভিক ব্যালেন্স + চলতি মাসের মোট আয়
+      const totalUsableFund = openingBalance + totalIncome;
+      // চলতি সমাপনী উদ্বৃত্ত / নিট ব্যালেন্স = ব্যয়যোগ্য মোট তহবিল - চলতি ব্যয়
+      const netBalance = totalUsableFund - totalExpense;
 
       // সার্বিক (Overall all-time) মোট আয় ও ব্যয় হিসাব
       const overallIncomeAgg = await financeIncomesCollection
@@ -399,7 +463,9 @@ function financeRoutes(collections) {
         success: true,
         data: {
           month: targetMonthLabel,
+          openingBalance,
           totalIncome,
+          totalUsableFund,
           totalExpense,
           netBalance,
           overallIncome,

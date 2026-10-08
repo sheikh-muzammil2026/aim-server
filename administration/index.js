@@ -1,14 +1,15 @@
 const { ObjectId } = require("mongodb");
 
 const getIdFilter = (id) => {
+  const strId = String(id);
   if (ObjectId.isValid(id)) {
     try {
-      return { $or: [{ _id: new ObjectId(id) }, { _id: String(id) }] };
+      return { $or: [{ _id: new ObjectId(id) }, { _id: strId }, { id: strId }] };
     } catch {
-      return { _id: String(id) };
+      return { $or: [{ _id: strId }, { id: strId }] };
     }
   }
-  return { _id: String(id) };
+  return { $or: [{ _id: strId }, { id: strId }] };
 };
 
 const getTargetCollection = async (db) => {
