@@ -98,29 +98,44 @@ function routineRoutes(collections, helpers) {
     try {
       const { examTitle, hijriYear, division } = req.query;
 
-      if (!examTitle) {
+      if (!examTitle || !examTitle.trim()) {
         return res
           .status(400)
           .json({ success: false, message: "examTitle প্রয়োজন" });
       }
 
+      const cleanTitle = examTitle.trim();
       const filter = {
-        examTitle: examTitle,
-        hijriYear: hijriYear || "",
-        division: division || "all",
+        examTitle: { $regex: new RegExp(`^${cleanTitle}$`, "i") },
       };
 
-      const existingRoutine = await routinesCollection.findOne(filter);
+      // শুধুমাত্র hijriYear পাঠানো হলে ফিল্টারে যোগ হবে (ডিফল্ট ফাঁকা স্ট্রিং দিয়ে রুটিন বাদ দেওয়া যাবে না)
+      if (hijriYear && hijriYear.trim()) {
+        filter.hijriYear = hijriYear.trim();
+      }
+
+      if (division && division.trim() && division.trim() !== "all") {
+        filter.division = division.trim();
+      }
+
+      // সর্বশেষ আপডেটেড রুটিন খোঁজা
+      const existingRoutine = await routinesCollection.findOne(filter, {
+        sort: { updatedAt: -1, _id: -1 },
+      });
 
       if (existingRoutine) {
-        res.status(200).json({ success: true, data: existingRoutine });
+        return res.status(200).json({ success: true, data: existingRoutine });
       } else {
-        res
-          .status(404)
-          .json({ success: false, message: "কোনো রুটিন পাওয়া যায়নি" });
+        // রুটিন না থাকলে 404 এর বদলে 200 সহ data: null ফেরত দেওয়া যাতে ব্রাউজারে লাল নেটওয়ার্ক এরর না ওঠে
+        return res.status(200).json({
+          success: false,
+          data: null,
+          message: "এই পরীক্ষার কোনো রুটিন পাওয়া যায়নি।",
+        });
       }
     } catch (error) {
-      res.status(500).json({ success: false, error: error.message });
+      console.error("GET /api/admin/routine error:", error);
+      return res.status(500).json({ success: false, error: error.message });
     }
   });
 
