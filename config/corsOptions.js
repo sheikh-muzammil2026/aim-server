@@ -2,15 +2,8 @@ const allowedOrigins = [
   "https://aimpurbachal.com",
   "https://www.aimpurbachal.com",
   "https://api.aimpurbachal.com",
-  "https://aimhabiganj.com",
-  "https://www.aimhabiganj.com",
   "https://aimhabiganj.vercel.app",
-  "http://localhost:3000",
-  "http://localhost:5000",
-  "http://localhost:5173",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:5000",
-  "http://127.0.0.1:5173",
+"https://aim-server.vercel.app",
 ];
 
 const isOriginAllowed = (origin) => {
