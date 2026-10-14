@@ -18,6 +18,7 @@ const examRoutes = require("./routes/examRoutes");
 const galleryRoutes = require("./routes/galleryRoutes");
 const financeRoutes = require("./routes/financeRoutes");
 const teacherRoutes = require("./routes/teacherRoutes");
+const staffRoutes = require("./routes/staffRoutes");
 const userRoutes = require("./routes/userRoutes");
 const authRoutes = require("./routes/authRoutes");
 const routineRoutes = require("./routes/routineRoutes");
@@ -55,6 +56,7 @@ async function run() {
     app.use(galleryRoutes(collections, authHelpers, database));
     app.use(financeRoutes(collections, authHelpers, database));
     app.use(teacherRoutes(collections, authHelpers, database));
+    app.use(staffRoutes(collections, authHelpers, database));
     app.use(userRoutes(collections, authHelpers, database));
     app.use(authRoutes(collections, authHelpers, database));
     app.use(routineRoutes(collections, authHelpers, database));

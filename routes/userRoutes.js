@@ -357,6 +357,64 @@ function userRoutes(collections, helpers) {
     }
   });
 
+  /**
+   * ৬. বর্তমান লগইনকৃত ইউজার তথ্য (GET /api/user/me)
+   */
+  router.get("/api/user/me", async (req, res) => {
+    try {
+      const email =
+        req.headers["x-user-email"] ||
+        req.query.email ||
+        req.query.userEmail;
+      const userId = req.headers["x-user-id"] || req.query.userId;
+
+      if (!email && !userId) {
+        return res.status(400).json({
+          success: false,
+          message: "ইমেইল বা ইউজার আইডি প্রদান করুন।",
+        });
+      }
+
+      const query = {};
+      if (userId) {
+        query._id = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+      } else if (email) {
+        query.email = {
+          $regex: new RegExp(`^${String(email).trim()}$`, "i"),
+        };
+      }
+
+      const user = await usersCollection.findOne(query);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "ব্যবহারকারী খুঁজে পাওয়া যায়নি।",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        user: {
+          id: user._id.toString(),
+          _id: user._id.toString(),
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          image: user.image || "",
+          phone: user.phone || "",
+          createdAt: user.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error("Fetch current user error:", error);
+      res.status(500).json({
+        success: false,
+        message: "সার্ভারে ইউজার লোড করতে সমস্যা হয়েছে।",
+        error: error.message,
+      });
+    }
+  });
+
   return router;
 }
 

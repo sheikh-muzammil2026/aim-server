@@ -69,6 +69,9 @@ async function connectDB() {
     studentAttendanceCollection: database.collection(
       "students_attendance",
     ),
+    staffCollection: database.collection("staff"),
+    staffAttendanceCollection: database.collection("staffattendance"),
+    teacherAttendanceCollection: database.collection("teacherattendance"),
   };
 
   return { client, database, collections };
