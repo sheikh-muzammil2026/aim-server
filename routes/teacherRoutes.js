@@ -22,9 +22,12 @@ function teacherRoutes(collections) {
       const {
         email,
         fullName,
+        nameEnglish,
         designation,
         phone,
         address,
+        addressDetails,
+        bankAccount,
         bio,
         profileImage,
         socialLinks,
@@ -51,9 +54,20 @@ function teacherRoutes(collections) {
       const updateDoc = {
         $set: {
           fullName,
+          nameEnglish: nameEnglish || "",
           designation: designation || "",
           phone: phone || "",
           address: address || "",
+          addressDetails:
+            addressDetails && typeof addressDetails === "object"
+              ? addressDetails
+              : {},
+          bankAccount:
+            bankAccount && typeof bankAccount === "object"
+              ? bankAccount
+              : bankAccount
+              ? { accountNumber: String(bankAccount) }
+              : {},
           bio: bio || "",
           profileImage: profileImage || "",
           socialLinks: socialLinks || {},
@@ -889,6 +903,9 @@ function teacherRoutes(collections) {
           email: t.email || "",
           profileImage: t.profileImage || t.image || t.photo || "",
           address: t.address || "",
+          addressDetails: t.addressDetails || {},
+          bankAccount: t.bankAccount || {},
+          nameEnglish: t.nameEnglish || "",
           bio: t.bio || "",
           academic: t.academic || [],
           experience: t.experience || [],
