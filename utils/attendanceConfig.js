@@ -224,10 +224,249 @@ function getStaffShiftPhase(date = new Date()) {
   };
 }
 
+// Residential Teachers (আবাসিক শিক্ষক) Attendance Rules - 3 Shifts
+const RESIDENTIAL_ATTENDANCE_RULES = {
+  shift1: {
+    id: "shift1",
+    name: "১ম শিফট (সকাল)",
+    nameEnglish: "Morning Shift",
+    checkInStartHour: 4,
+    checkInStartMinute: 0,
+    checkInCutoffHour: 5,
+    checkInCutoffMinute: 30, // Cutoff 5:30 AM (Late after 5:30 AM)
+    checkInWindowLabel: "ভোর ০৪:০০ টা – ০৫:৩০ টা",
+    checkOutStartHour: 7,
+    checkOutStartMinute: 0,
+    checkOutEndHour: 7,
+    checkOutEndMinute: 10, // Early before 7:00 AM
+    checkOutWindowLabel: "সকাল ০৭:০০ টা – ০৭:১০ টা",
+  },
+  shift2: {
+    id: "shift2",
+    name: "২য় শিফট (ক্লাস)",
+    nameEnglish: "Class Shift",
+    checkInStartHour: 7,
+    checkInStartMinute: 15,
+    checkInCutoffHour: 8,
+    checkInCutoffMinute: 5, // Cutoff 8:05 AM (Late after 8:05 AM)
+    checkInWindowLabel: "সকাল ০৮:০৫ এর পূর্বে",
+    checkOutStartHour: 13,
+    checkOutStartMinute: 10,
+    checkOutEndHour: 13,
+    checkOutEndMinute: 30, // Early before 1:10 PM
+    checkOutWindowLabel: "দুপুর ০১:১০ টা",
+  },
+  shift3: {
+    id: "shift3",
+    name: "৩য় শিফট (রাত/সন্ধ্যা)",
+    nameEnglish: "Night Shift",
+    checkInStartHour: 18,
+    checkInStartMinute: 10,
+    checkInCutoffHour: 18,
+    checkInCutoffMinute: 20, // Cutoff 6:20 PM (Late after 6:20 PM)
+    checkInWindowLabel: "সন্ধ্যা ০৬:১০ টা – ০৬:২০ টা",
+    checkOutStartHour: 22,
+    checkOutStartMinute: 0,
+    checkOutEndHour: 22,
+    checkOutEndMinute: 10, // Early before 10:00 PM
+    checkOutWindowLabel: "রাত ১০:০০ টা – ১০:১০ টা",
+  },
+};
+
+// Hifz Teachers (হিফজ শিক্ষক) Attendance Rules - 3 Shifts
+const HIFZ_ATTENDANCE_RULES = {
+  shift1: {
+    id: "shift1",
+    name: "১ম শিফট (সকাল)",
+    nameEnglish: "Morning Shift",
+    checkInStartHour: 4,
+    checkInStartMinute: 0,
+    checkInCutoffHour: 5,
+    checkInCutoffMinute: 30, // Cutoff 5:30 AM (Late after 5:30 AM)
+    checkInWindowLabel: "ভোর ০৪:০০ টা – ০৫:৩০ টা",
+    checkOutStartHour: 9,
+    checkOutStartMinute: 10,
+    checkOutEndHour: 9,
+    checkOutEndMinute: 30, // Early before 9:10 AM
+    checkOutWindowLabel: "সকাল ০৯:১০ টা – ০৯:৩০ টা",
+  },
+  shift2: {
+    id: "shift2",
+    name: "২য় শিফট (দুপুর)",
+    nameEnglish: "Noon Shift",
+    checkInStartHour: 12,
+    checkInStartMinute: 0,
+    checkInCutoffHour: 14,
+    checkInCutoffMinute: 20, // Cutoff 2:20 PM (Late after 2:20 PM)
+    checkInWindowLabel: "দুপুর ১২:০০ টা – ০২:২০ টা",
+    checkOutStartHour: 16,
+    checkOutStartMinute: 10,
+    checkOutEndHour: 16,
+    checkOutEndMinute: 20, // Early before 4:10 PM
+    checkOutWindowLabel: "বিকাল ০৪:১০ টা – ০৪:২০ টা",
+  },
+  shift3: {
+    id: "shift3",
+    name: "৩য় শিফট (রাত/সন্ধ্যা)",
+    nameEnglish: "Night Shift",
+    checkInStartHour: 18,
+    checkInStartMinute: 10,
+    checkInCutoffHour: 18,
+    checkInCutoffMinute: 20, // Cutoff 6:20 PM (Late after 6:20 PM)
+    checkInWindowLabel: "সন্ধ্যা ০৬:১০ টা – ০৬:২০ টা",
+    checkOutStartHour: 22,
+    checkOutStartMinute: 0,
+    checkOutEndHour: 22,
+    checkOutEndMinute: 10, // Early before 10:00 PM
+    checkOutWindowLabel: "রাত ১০:০০ টা – ১০:১০ টা",
+  },
+};
+
+/**
+ * Categorizes a teacher designation into 'regular', 'residential', or 'hifz'
+ * @param {string} designation
+ * @returns {'regular'|'residential'|'hifz'}
+ */
+function getTeacherCategory(designation = "") {
+  const norm = String(designation || "").trim();
+  if (norm.includes("হিফজ") || norm.includes("হিফয") || norm.includes("হিফ্জ") || /hifz|hifdh/i.test(norm)) {
+    return "hifz";
+  }
+  // Check 'অনাবাসিক' before 'আবাসিক' because 'অনাবাসিক' contains 'আবাসিক'
+  if (norm.includes("অনাবাসিক") || /non-residential/i.test(norm)) {
+    return "regular";
+  }
+  if (norm.includes("আবাসিক") || /residential/i.test(norm)) {
+    return "residential";
+  }
+  return "regular";
+}
+
+/**
+ * Returns shift rules dictionary for the category or null if regular
+ * @param {'regular'|'residential'|'hifz'} category
+ */
+function getTeacherShiftRules(category) {
+  if (category === "residential") return RESIDENTIAL_ATTENDANCE_RULES;
+  if (category === "hifz") return HIFZ_ATTENDANCE_RULES;
+  return null;
+}
+
+/**
+ * Evaluates shift check-in status
+ * @param {'regular'|'residential'|'hifz'} category
+ * @param {string} shiftId ('shift1'|'shift2'|'shift3')
+ * @param {Date|string|number} date
+ */
+function evaluateTeacherShiftCheckIn(category, shiftId = "shift1", date = new Date()) {
+  const { minutesSinceMidnight } = getDhakaTime(date);
+
+  if (category === "regular" || !category) {
+    const isLate =
+      minutesSinceMidnight >
+      ATTENDANCE_RULES.ON_TIME_CHECKIN_CUTOFF_HOUR * 60 +
+        ATTENDANCE_RULES.ON_TIME_CHECKIN_CUTOFF_MINUTE;
+    return {
+      status: isLate ? "Late" : "On Time",
+      isLate,
+      cutoffMinutes: 485,
+    };
+  }
+
+  const rulesMap = getTeacherShiftRules(category);
+  const shiftRule = rulesMap ? rulesMap[shiftId] : null;
+
+  if (!shiftRule) {
+    return { status: "On Time", isLate: false };
+  }
+
+  const cutoff = shiftRule.checkInCutoffHour * 60 + shiftRule.checkInCutoffMinute;
+  const isLate = minutesSinceMidnight > cutoff;
+
+  return {
+    status: isLate ? "Late" : "On Time",
+    isLate,
+    cutoffMinutes: cutoff,
+    shift: shiftRule,
+  };
+}
+
+/**
+ * Evaluates shift check-out status
+ * @param {'regular'|'residential'|'hifz'} category
+ * @param {string} shiftId ('shift1'|'shift2'|'shift3')
+ * @param {Date|string|number} date
+ */
+function evaluateTeacherShiftCheckOut(category, shiftId = "shift1", date = new Date()) {
+  const { minutesSinceMidnight } = getDhakaTime(date);
+
+  if (category === "regular" || !category) {
+    const isEarly =
+      minutesSinceMidnight <
+      ATTENDANCE_RULES.OFFICE_END_HOUR * 60 + ATTENDANCE_RULES.OFFICE_END_MINUTE;
+    return {
+      status: isEarly ? "Early" : "On Time",
+      isEarly,
+      startOutMinutes: 790,
+    };
+  }
+
+  const rulesMap = getTeacherShiftRules(category);
+  const shiftRule = rulesMap ? rulesMap[shiftId] : null;
+
+  if (!shiftRule) {
+    return { status: "On Time", isEarly: false };
+  }
+
+  const startOut = shiftRule.checkOutStartHour * 60 + shiftRule.checkOutStartMinute;
+  const isEarly = minutesSinceMidnight < startOut;
+
+  return {
+    status: isEarly ? "Early" : "On Time",
+    isEarly,
+    startOutMinutes: startOut,
+    shift: shiftRule,
+  };
+}
+
+/**
+ * Determines current active shift based on time of day
+ * @param {'regular'|'residential'|'hifz'} category
+ * @param {Date|string|number} date
+ */
+function getActiveTeacherShift(category, date = new Date()) {
+  if (category === "regular" || !category) {
+    return null;
+  }
+  const { minutesSinceMidnight } = getDhakaTime(date);
+
+  if (category === "residential") {
+    // shift1 check-out is 07:10 (430m). Up to 450m (07:30 AM), consider shift1.
+    if (minutesSinceMidnight < 450) return "shift1";
+    // shift2 check-out is 13:10 (790m). Up to 900m (15:00 / 03:00 PM), consider shift2.
+    if (minutesSinceMidnight < 900) return "shift2";
+    // Remaining is shift3 (evening/night).
+    return "shift3";
+  }
+
+  if (category === "hifz") {
+    // shift1 check-out is 09:30 (570m). Up to 630m (10:30 AM), consider shift1.
+    if (minutesSinceMidnight < 630) return "shift1";
+    // shift2 check-out is 16:20 (980m). Up to 1020m (17:00 / 05:00 PM), consider shift2.
+    if (minutesSinceMidnight < 1020) return "shift2";
+    // Remaining is shift3.
+    return "shift3";
+  }
+
+  return "shift1";
+}
+
 module.exports = {
   MADRASA_LOCATION,
   ATTENDANCE_RULES,
   STAFF_ATTENDANCE_RULES,
+  RESIDENTIAL_ATTENDANCE_RULES,
+  HIFZ_ATTENDANCE_RULES,
   calculateDistanceMeters,
   isWithinMadrasaGeofence,
   getDhakaTime,
@@ -236,4 +475,9 @@ module.exports = {
   evaluateStaffCheckInStatus,
   evaluateStaffCheckOutStatus,
   getStaffShiftPhase,
+  getTeacherCategory,
+  getTeacherShiftRules,
+  evaluateTeacherShiftCheckIn,
+  evaluateTeacherShiftCheckOut,
+  getActiveTeacherShift,
 };

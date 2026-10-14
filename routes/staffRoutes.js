@@ -75,7 +75,7 @@ const INITIAL_STAFF_MEMBERS = [
 
 function staffRoutes(collections) {
   const router = express.Router();
-  const { staffCollection, staffAttendanceCollection, usersCollection } = collections;
+  const { staffCollection, staffAttendanceCollection } = collections;
 
   // Helper to resolve staff user from request
   async function getStaffUser(req, body = {}) {
@@ -88,47 +88,38 @@ function staffRoutes(collections) {
 
     const staffId = body.staffId || req.query.staffId;
 
-    let userDoc = null;
     let staffDoc = null;
 
-    if (email) {
+    if (email && staffCollection) {
       const cleanEmail = String(email).trim().toLowerCase();
-      if (usersCollection) {
-        userDoc = await usersCollection.findOne({
-          email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
-        });
-      }
-      if (staffCollection) {
-        staffDoc = await staffCollection.findOne({
-          email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
-        });
-      }
+      staffDoc = await staffCollection.findOne({
+        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+      });
     }
 
     if (!staffDoc && staffId && staffCollection) {
       staffDoc = await staffCollection.findOne({ staffId: String(staffId).trim() });
     }
 
-    if (!userDoc && !staffDoc && !email && !staffId) {
+    if (!staffDoc && !email && !staffId) {
       return null;
     }
 
     const resolvedEmail =
-      userDoc?.email || staffDoc?.email || (email ? String(email).trim().toLowerCase() : "");
+      staffDoc?.email || (email ? String(email).trim().toLowerCase() : "");
     const resolvedName =
-      staffDoc?.fullName || staffDoc?.name || userDoc?.name || "স্টাফ কর্মকর্তা";
+      staffDoc?.fullName || staffDoc?.name || "স্টাফ কর্মকর্তা";
     const resolvedStaffId = staffDoc?.staffId || staffId || "ID NO-AIM ST-001";
-    const resolvedDesignation = staffDoc?.designation || userDoc?.designation || "স্টাফ";
+    const resolvedDesignation = staffDoc?.designation || "স্টাফ";
 
     return {
-      id: staffDoc?._id?.toString() || userDoc?._id?.toString() || "staff-user-id",
+      id: staffDoc?._id?.toString() || "staff-user-id",
       email: resolvedEmail,
       name: resolvedName,
       staffId: resolvedStaffId,
       designation: resolvedDesignation,
-      role: (userDoc?.role || "staff").toLowerCase(),
+      role: (staffDoc?.role || staffDoc?.designation || "staff").toLowerCase(),
       staffProfile: staffDoc,
-      userDoc,
     };
   }
 
@@ -138,80 +129,29 @@ function staffRoutes(collections) {
    */
   router.get("/api/staff", async (req, res) => {
     try {
-      let staffUsers = [];
-      if (usersCollection) {
-        staffUsers = await usersCollection
-          .find({ role: { $regex: /^staff$/i } })
-          .toArray()
-          .catch(() => []);
-      }
-
       const staffProfiles = staffCollection
         ? await staffCollection.find({}).toArray().catch(() => [])
         : [];
 
-      const profileMap = new Map();
-      staffProfiles.forEach((s) => {
-        if (s.email) {
-          profileMap.set(s.email.trim().toLowerCase(), s);
-        }
-      });
-
-      const staffList = [];
-      const addedEmails = new Set();
-
-      staffUsers.forEach((user, index) => {
-        const emailKey = (user.email || "").trim().toLowerCase();
-        if (emailKey) addedEmails.add(emailKey);
-        const profile = emailKey ? profileMap.get(emailKey) : null;
-
-        staffList.push({
-          id: user._id?.toString() || profile?._id?.toString() || `staff-${index + 1}`,
-          name: profile?.fullName?.trim() || user.name?.trim() || "কর্মকর্তা / কর্মচারী",
-          fullName: profile?.fullName?.trim() || user.name?.trim() || "কর্মকর্তা / কর্মচারী",
-          role: profile?.designation?.trim() || user.designation?.trim() || "স্টাফ",
-          designation: profile?.designation?.trim() || user.designation?.trim() || "স্টাফ",
-          department: profile?.department?.trim() || "প্রশাসন ও সেবা",
-          phone: profile?.phone || profile?.mobile || user.phone || "",
-          contact: profile?.phone || profile?.mobile || user.phone || "",
-          email: user.email || profile?.email || "",
-          staffId: profile?.staffId || "",
-          bloodGroup: profile?.bloodGroup || "",
-          joiningDate: profile?.joiningDate || "",
-          dateOfBirth: profile?.dateOfBirth || "",
-          address: profile?.address || "",
-          image: profile?.profileImage || profile?.image || user.image || "",
-          profileImage: profile?.profileImage || profile?.image || user.image || "",
-          bio: profile?.bio || "",
-        });
-      });
-
-      staffProfiles.forEach((profile, index) => {
-        const emailKey = (profile.email || "").trim().toLowerCase();
-        if (!emailKey || !addedEmails.has(emailKey)) {
-          if (profile.fullName || profile.name) {
-            staffList.push({
-              id: profile._id?.toString() || `staff-ext-${index + 1}`,
-              name: profile.fullName?.trim() || profile.name?.trim() || "কর্মকর্তা / কর্মচারী",
-              fullName: profile.fullName?.trim() || profile.name?.trim() || "কর্মকর্তা / কর্মচারী",
-              role: profile.designation?.trim() || "স্টাফ",
-              designation: profile.designation?.trim() || "স্টাফ",
-              department: profile.department?.trim() || "প্রশাসন ও সেবা",
-              phone: profile.phone || profile.mobile || "",
-              contact: profile.phone || profile.mobile || "",
-              email: profile.email || "",
-              staffId: profile.staffId || "",
-              bloodGroup: profile.bloodGroup || "",
-              joiningDate: profile.joiningDate || "",
-              dateOfBirth: profile.dateOfBirth || "",
-              address: profile.address || "",
-              image: profile.profileImage || profile.image || "",
-              profileImage: profile.profileImage || profile.image || "",
-              bio: profile.bio || "",
-            });
-          }
-        }
-      });
+      const staffList = staffProfiles.map((profile, index) => ({
+        id: profile._id?.toString() || `staff-${index + 1}`,
+        name: profile?.fullName?.trim() || profile?.name?.trim() || "কর্মকর্তা / কর্মচারী",
+        fullName: profile?.fullName?.trim() || profile?.name?.trim() || "কর্মকর্তা / কর্মচারী",
+        role: profile?.designation?.trim() || "স্টাফ",
+        designation: profile?.designation?.trim() || "স্টাফ",
+        department: profile?.department?.trim() || "প্রশাসন ও সেবা",
+        phone: profile?.phone || profile?.mobile || "",
+        contact: profile?.phone || profile?.mobile || "",
+        email: profile?.email || "",
+        staffId: profile?.staffId || "",
+        bloodGroup: profile?.bloodGroup || "",
+        joiningDate: profile?.joiningDate || "",
+        dateOfBirth: profile?.dateOfBirth || "",
+        address: profile?.address || "",
+        image: profile?.profileImage || profile?.image || "",
+        profileImage: profile?.profileImage || profile?.image || "",
+        bio: profile?.bio || "",
+      }));
 
       res.status(200).json({
         success: true,
@@ -290,12 +230,12 @@ function staffRoutes(collections) {
           staffId: profileData.staffId || user.staffId,
           designation: profileData.designation || user.designation,
           department: profileData.department || "প্রশাসন ও সেবা",
-          phone: profileData.phone || user.userDoc?.phone || "০১৭১২৩৪৫৬৭৮",
+          phone: profileData.phone || "০১৭১২৩৪৫৬৭৮",
           dateOfBirth: profileData.dateOfBirth || "15/05/1992",
           bloodGroup: profileData.bloodGroup || "A (+)",
           joiningDate: profileData.joiningDate || "01/01/2023",
           address: profileData.address || "হবিগঞ্জ সদর, হবিগঞ্জ",
-          profileImage: profileData.profileImage || user.userDoc?.image || "",
+          profileImage: profileData.profileImage || "",
         },
         stats: {
           month: currentMonth,
@@ -354,7 +294,6 @@ function staffRoutes(collections) {
       const { dateStr } = getDhakaTime();
       const now = new Date();
       const checkInStatus = evaluateStaffCheckInStatus(now);
-
       const queryFilter = {
         $or: [
           ...(user.email
@@ -374,6 +313,16 @@ function staffRoutes(collections) {
       }
 
       const checkInComment = (body.checkInComment || body.comment || "").trim();
+
+      // Enforce late check-in reason comment
+      if (checkInStatus === "Late" && !checkInComment) {
+        return res.status(400).json({
+          success: false,
+          requiresComment: true,
+          status: "Late",
+          message: "দেরিতে উপস্থিতির কারণ উল্লেখ করা বাধ্যতামূলক (ভোর ৫:৩০ অতিক্রান্ত)।",
+        });
+      }
       const attendanceDoc = {
         staffId: user.staffId || user.id,
         staffEmail: user.email,
@@ -508,6 +457,17 @@ function staffRoutes(collections) {
       const durationText = `${hours} ঘণ্টা ${minutes} মিনিট`;
 
       const checkOutComment = (body.checkOutComment || body.comment || "").trim();
+
+      // Enforce early check-out reason comment
+      if (checkOutStatus === "Early" && !checkOutComment) {
+        return res.status(400).json({
+          success: false,
+          requiresComment: true,
+          status: "Early",
+          message: "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক (রাত ১০:০০ এর পূর্বে)।",
+        });
+      }
+
       const updateFields = {
         checkOutTime: now.toISOString(),
         checkOutStatus, // 'On Time' | 'Early' | 'Overtime'
@@ -966,6 +926,9 @@ function staffRoutes(collections) {
             lateComments: staffLogs
               .filter((l) => l.checkInComment)
               .map((l) => ({ date: l.date, comment: l.checkInComment })),
+            earlyComments: staffLogs
+              .filter((l) => l.checkOutComment)
+              .map((l) => ({ date: l.date, comment: l.checkOutComment })),
           };
         });
 
@@ -975,6 +938,7 @@ function staffRoutes(collections) {
           totalStaff: totalStaffCount,
           totalWorkingDays,
           summary,
+          staffSummary: summary,
         });
       }
 

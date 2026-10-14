@@ -7,11 +7,18 @@ const {
   evaluateCheckOutStatus,
   MADRASA_LOCATION,
   ATTENDANCE_RULES,
+  RESIDENTIAL_ATTENDANCE_RULES,
+  HIFZ_ATTENDANCE_RULES,
+  getTeacherCategory,
+  getTeacherShiftRules,
+  evaluateTeacherShiftCheckIn,
+  evaluateTeacherShiftCheckOut,
+  getActiveTeacherShift,
 } = require("../utils/attendanceConfig");
 
 function teacherRoutes(collections) {
   const router = express.Router();
-  const { teachersCollection, usersCollection, teacherAttendanceCollection } = collections;
+  const { teachersCollection, teacherAttendanceCollection } = collections;
 
   /**
    * শিক্ষকের প্রোফাইল সেভ বা আপডেট করা (POST / Upsert)
@@ -251,7 +258,7 @@ function teacherRoutes(collections) {
   router.get("/api/faculty", getPublicFacultyHandler);
   router.get("/api/teachers", getPublicFacultyHandler);
 
-  // Teacher Authentication Helper
+  // Teacher Authentication Helper (Fetch directly from teachersCollection)
   async function getAuthTeacher(req, body = {}) {
     const email =
       req.headers["x-user-email"] ||
@@ -263,27 +270,22 @@ function teacherRoutes(collections) {
     if (!email) return null;
     const cleanEmail = String(email).trim().toLowerCase();
 
-    let user = null;
-    if (usersCollection) {
-      user = await usersCollection.findOne({
-        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
-      });
-    }
+    if (!teachersCollection) return null;
 
-    let teacher = null;
-    if (teachersCollection) {
-      teacher = await teachersCollection.findOne({
-        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
-      });
-    }
+    const teacher = await teachersCollection.findOne({
+      email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+    });
+
+    if (!teacher) return null;
 
     return {
-      id: user?._id?.toString() || teacher?._id?.toString() || "teacher-id",
+      id: teacher._id?.toString() || "teacher-id",
       email: cleanEmail,
-      name: teacher?.fullName || teacher?.name || user?.name || cleanEmail.split("@")[0],
-      role: (user?.role || "teacher").toLowerCase(),
-      designation: teacher?.designation || user?.designation || "শিক্ষক",
-      profileImage: teacher?.profileImage || teacher?.image || user?.image || "",
+      name: teacher.fullName || teacher.name || cleanEmail.split("@")[0],
+      role: "teacher",
+      designation: (teacher.designation || "শিক্ষক").trim(),
+      profileImage: teacher.profileImage || teacher.image || "",
+      teacherDoc: teacher,
     };
   }
 
@@ -326,72 +328,178 @@ function teacherRoutes(collections) {
         }
       }
 
+      const category = getTeacherCategory(user.designation);
+      const isMultiShift = category === "residential" || category === "hifz";
+      const shiftId = body.shiftId || (isMultiShift ? getActiveTeacherShift(category) : null);
+      const shiftRules = getTeacherShiftRules(category);
+      const currentShiftRule = (shiftRules && shiftId) ? shiftRules[shiftId] : null;
+
       const { dateStr } = getDhakaTime();
       const now = new Date();
-      const checkInStatus = evaluateCheckInStatus(now);
+
+      let checkInStatus = "On Time";
+      if (isMultiShift && shiftId) {
+        const evalResult = evaluateTeacherShiftCheckIn(category, shiftId, now);
+        checkInStatus = evalResult.status;
+      } else {
+        checkInStatus = evaluateCheckInStatus(now);
+      }
+
+      const checkInComment = (body.checkInComment || body.comment || "").trim();
+
+      // Enforce late check-in reason comment
+      if (checkInStatus === "Late" && !checkInComment) {
+        return res.status(400).json({
+          success: false,
+          requiresComment: true,
+          status: "Late",
+          message: "দেরিতে উপস্থিতির কারণ উল্লেখ করা বাধ্যতামূলক।",
+        });
+      }
 
       const existing = await teacherAttendanceCollection.findOne({
         teacherEmail: user.email,
         date: dateStr,
       });
 
-      if (existing && existing.checkInTime) {
-        return res.status(400).json({
-          success: false,
-          message: "আপনি আজকের হাজিরা (Check-In) ইতিমধ্যে সম্পন্ন করেছেন।",
-          attendance: existing,
+      if (!isMultiShift) {
+        // Case A: Regular Teacher (Single-shift, completely unchanged flow)
+        if (existing && existing.checkInTime) {
+          return res.status(400).json({
+            success: false,
+            message: "আপনি আজকের হাজিরা (Check-In) ইতিমধ্যে সম্পন্ন করেছেন।",
+            attendance: existing,
+          });
+        }
+
+        const attendanceDoc = {
+          teacherEmail: user.email,
+          teacherName: user.name || user.email.split("@")[0],
+          teacherId: user.id,
+          date: dateStr,
+          checkInTime: now.toISOString(),
+          checkInStatus: checkInStatus, // 'On Time' | 'Late'
+          checkInComment: checkInComment || null,
+          checkInLocation: {
+            lat: effectiveLat,
+            lng: effectiveLng,
+          },
+          checkOutTime: null,
+          checkOutStatus: null,
+          checkOutLocation: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        if (existing) {
+          await teacherAttendanceCollection.updateOne(
+            { _id: existing._id },
+            {
+              $set: {
+                checkInTime: attendanceDoc.checkInTime,
+                checkInStatus: attendanceDoc.checkInStatus,
+                checkInComment: attendanceDoc.checkInComment,
+                checkInLocation: attendanceDoc.checkInLocation,
+                updatedAt: now,
+              },
+            }
+          );
+          attendanceDoc._id = existing._id;
+        } else {
+          const result = await teacherAttendanceCollection.insertOne(attendanceDoc);
+          attendanceDoc._id = result.insertedId;
+        }
+
+        return res.status(200).json({
+          success: true,
+          message:
+            checkInStatus === "On Time"
+              ? "সফলভাবে সময়মতো প্রবেশ হাজিরা নিশ্চিত হয়েছে! (On Time)"
+              : "দেরিতে প্রবেশ হাজিরা নিশ্চিত হয়েছে! (Late)",
+          checkInStatus,
+          attendance: attendanceDoc,
+        });
+      } else {
+        // Case B & Case C: Multi-shift (Residential / Hifz)
+        if (existing?.shifts?.[shiftId]?.checkInTime) {
+          return res.status(400).json({
+            success: false,
+            message: `আপনি ইতিমধ্যে ${currentShiftRule?.name || shiftId}-এর প্রবেশ হাজিরা সম্পন্ন করেছেন।`,
+            attendance: existing,
+          });
+        }
+
+        const shiftRecord = {
+          shiftId,
+          name: currentShiftRule?.name || shiftId,
+          checkInTime: now.toISOString(),
+          checkInStatus,
+          checkInComment: checkInComment || null,
+          checkInLocation: {
+            lat: effectiveLat,
+            lng: effectiveLng,
+          },
+          checkOutTime: null,
+          checkOutStatus: null,
+          checkOutComment: null,
+          checkOutLocation: null,
+        };
+
+        let updatedDoc = null;
+
+        if (existing) {
+          const updateFields = {
+            [`shifts.${shiftId}`]: shiftRecord,
+            updatedAt: now,
+          };
+          if (!existing.checkInTime) {
+            updateFields.checkInTime = now.toISOString();
+            updateFields.checkInStatus = checkInStatus;
+            updateFields.checkInComment = checkInComment || null;
+            updateFields.checkInLocation = { lat: effectiveLat, lng: effectiveLng };
+          }
+          await teacherAttendanceCollection.updateOne(
+            { _id: existing._id },
+            { $set: updateFields }
+          );
+          updatedDoc = await teacherAttendanceCollection.findOne({ _id: existing._id });
+        } else {
+          const docToInsert = {
+            teacherEmail: user.email,
+            teacherName: user.name || user.email.split("@")[0],
+            teacherId: user.id,
+            teacherDesignation: user.designation,
+            category,
+            date: dateStr,
+            checkInTime: now.toISOString(),
+            checkInStatus: checkInStatus,
+            checkInComment: checkInComment || null,
+            checkInLocation: { lat: effectiveLat, lng: effectiveLng },
+            checkOutTime: null,
+            checkOutStatus: null,
+            checkOutLocation: null,
+            shifts: {
+              [shiftId]: shiftRecord,
+            },
+            createdAt: now,
+            updatedAt: now,
+          };
+          const result = await teacherAttendanceCollection.insertOne(docToInsert);
+          docToInsert._id = result.insertedId;
+          updatedDoc = docToInsert;
+        }
+
+        return res.status(200).json({
+          success: true,
+          message:
+            checkInStatus === "On Time"
+              ? `${currentShiftRule?.name || shiftId}: সময়মতো প্রবেশ হাজিরা নিশ্চিত হয়েছে! (On Time)`
+              : `${currentShiftRule?.name || shiftId}: দেরিতে প্রবেশ হাজিরা নিশ্চিত হয়েছে! (Late)`,
+          checkInStatus,
+          shiftId,
+          attendance: updatedDoc,
         });
       }
-
-      const checkInComment = (body.checkInComment || body.comment || "").trim();
-
-      const attendanceDoc = {
-        teacherEmail: user.email,
-        teacherName: user.name || user.email.split("@")[0],
-        teacherId: user.id,
-        date: dateStr,
-        checkInTime: now.toISOString(),
-        checkInStatus: checkInStatus, // 'On Time' | 'Late'
-        checkInComment: checkInComment || null,
-        checkInLocation: {
-          lat: effectiveLat,
-          lng: effectiveLng,
-        },
-        checkOutTime: null,
-        checkOutStatus: null,
-        checkOutLocation: null,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      if (existing) {
-        await teacherAttendanceCollection.updateOne(
-          { _id: existing._id },
-          {
-            $set: {
-              checkInTime: attendanceDoc.checkInTime,
-              checkInStatus: attendanceDoc.checkInStatus,
-              checkInComment: attendanceDoc.checkInComment,
-              checkInLocation: attendanceDoc.checkInLocation,
-              updatedAt: now,
-            },
-          }
-        );
-        attendanceDoc._id = existing._id;
-      } else {
-        const result = await teacherAttendanceCollection.insertOne(attendanceDoc);
-        attendanceDoc._id = result.insertedId;
-      }
-
-      res.status(200).json({
-        success: true,
-        message:
-          checkInStatus === "On Time"
-            ? "সফলভাবে সময়মতো প্রবেশ হাজিরা নিশ্চিত হয়েছে! (On Time)"
-            : "দেরিতে প্রবেশ হাজিরা নিশ্চিত হয়েছে! (Late)",
-        checkInStatus,
-        attendance: attendanceDoc,
-      });
     } catch (error) {
       console.error("Teacher Check-in error:", error);
       res.status(500).json({
@@ -441,68 +549,146 @@ function teacherRoutes(collections) {
         }
       }
 
+      const category = getTeacherCategory(user.designation);
+      const isMultiShift = category === "residential" || category === "hifz";
+      const shiftId = body.shiftId || (isMultiShift ? getActiveTeacherShift(category) : null);
+      const shiftRules = getTeacherShiftRules(category);
+      const currentShiftRule = (shiftRules && shiftId) ? shiftRules[shiftId] : null;
+
       const { dateStr } = getDhakaTime();
       const now = new Date();
-      const checkOutStatus = evaluateCheckOutStatus(now);
+
+      let checkOutStatus = "On Time";
+      if (isMultiShift && shiftId) {
+        const evalResult = evaluateTeacherShiftCheckOut(category, shiftId, now);
+        checkOutStatus = evalResult.status;
+      } else {
+        checkOutStatus = evaluateCheckOutStatus(now);
+      }
+
+      const checkOutComment = (body.checkOutComment || body.comment || "").trim();
+
+      // Enforce early check-out reason comment
+      if (checkOutStatus === "Early" && !checkOutComment) {
+        return res.status(400).json({
+          success: false,
+          requiresComment: true,
+          status: "Early",
+          message: "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক।",
+        });
+      }
 
       const existing = await teacherAttendanceCollection.findOne({
         teacherEmail: user.email,
         date: dateStr,
       });
 
-      if (!existing || !existing.checkInTime) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "আজকের কোনো প্রবেশ হাজিরা (Check-In) পাওয়া যায়নি। আগে Check-In সম্পন্ন করুন।",
-        });
-      }
-
-      if (existing.checkOutTime) {
-        return res.status(400).json({
-          success: false,
-          message: "আপনি আজকের প্রস্থান হাজিরা (Check-Out) ইতিমধ্যে সম্পন্ন করেছেন।",
-          attendance: existing,
-        });
-      }
-
-      const checkOutComment = (body.checkOutComment || body.comment || "").trim();
-      const checkOutLocation = {
-        lat: effectiveLat,
-        lng: effectiveLng,
-      };
-
-      await teacherAttendanceCollection.updateOne(
-        { _id: existing._id },
-        {
-          $set: {
-            checkOutTime: now.toISOString(),
-            checkOutStatus: checkOutStatus, // 'On Time' | 'Early'
-            checkOutComment: checkOutComment || null,
-            checkOutLocation: checkOutLocation,
-            updatedAt: now,
-          },
+      if (!isMultiShift) {
+        // Case A: Regular Teacher (Single-shift, completely unchanged flow)
+        if (!existing || !existing.checkInTime) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "আজকের কোনো প্রবেশ হাজিরা (Check-In) পাওয়া যায়নি। আগে Check-In সম্পন্ন করুন।",
+          });
         }
-      );
 
-      const updatedDoc = {
-        ...existing,
-        checkOutTime: now.toISOString(),
-        checkOutStatus,
-        checkOutComment: checkOutComment || null,
-        checkOutLocation,
-        updatedAt: now,
-      };
+        if (existing.checkOutTime) {
+          return res.status(400).json({
+            success: false,
+            message: "আপনি আজকের প্রস্থান হাজিরা (Check-Out) ইতিমধ্যে সম্পন্ন করেছেন।",
+            attendance: existing,
+          });
+        }
 
-      res.status(200).json({
-        success: true,
-        message:
-          checkOutStatus === "On Time"
-            ? "সফলভাবে প্রস্থান হাজিরা নিশ্চিত হয়েছে! (Completed / On Time Departure)"
-            : "সময় শেষ হওয়ার পূর্বে প্রস্থান সম্পন্ন হয়েছে! (Early Departure)",
-        checkOutStatus,
-        attendance: updatedDoc,
-      });
+        const checkOutLocation = {
+          lat: effectiveLat,
+          lng: effectiveLng,
+        };
+
+        await teacherAttendanceCollection.updateOne(
+          { _id: existing._id },
+          {
+            $set: {
+              checkOutTime: now.toISOString(),
+              checkOutStatus: checkOutStatus, // 'On Time' | 'Early'
+              checkOutComment: checkOutComment || null,
+              checkOutLocation: checkOutLocation,
+              updatedAt: now,
+            },
+          }
+        );
+
+        const updatedDoc = {
+          ...existing,
+          checkOutTime: now.toISOString(),
+          checkOutStatus,
+          checkOutComment: checkOutComment || null,
+          checkOutLocation,
+          updatedAt: now,
+        };
+
+        return res.status(200).json({
+          success: true,
+          message:
+            checkOutStatus === "On Time"
+              ? "সফলভাবে প্রস্থান হাজিরা নিশ্চিত হয়েছে! (Completed / On Time Departure)"
+              : "সময় শেষ হওয়ার পূর্বে প্রস্থান সম্পন্ন হয়েছে! (Early Departure)",
+          checkOutStatus,
+          attendance: updatedDoc,
+        });
+      } else {
+        // Case B & Case C: Multi-shift
+        if (!existing || !existing.shifts?.[shiftId]?.checkInTime) {
+          return res.status(400).json({
+            success: false,
+            message: `${currentShiftRule?.name || shiftId}-এর কোনো প্রবেশ হাজিরা পাওয়া যায়নি। আগে Check-In সম্পন্ন করুন।`,
+          });
+        }
+
+        if (existing.shifts?.[shiftId]?.checkOutTime) {
+          return res.status(400).json({
+            success: false,
+            message: `আপনি ইতিমধ্যে ${currentShiftRule?.name || shiftId}-এর প্রস্থান হাজিরা সম্পন্ন করেছেন।`,
+            attendance: existing,
+          });
+        }
+
+        const checkOutLocation = {
+          lat: effectiveLat,
+          lng: effectiveLng,
+        };
+
+        const updateFields = {
+          [`shifts.${shiftId}.checkOutTime`]: now.toISOString(),
+          [`shifts.${shiftId}.checkOutStatus`]: checkOutStatus,
+          [`shifts.${shiftId}.checkOutComment`]: checkOutComment || null,
+          [`shifts.${shiftId}.checkOutLocation`]: checkOutLocation,
+          checkOutTime: now.toISOString(),
+          checkOutStatus: checkOutStatus,
+          checkOutComment: checkOutComment || null,
+          checkOutLocation,
+          updatedAt: now,
+        };
+
+        await teacherAttendanceCollection.updateOne(
+          { _id: existing._id },
+          { $set: updateFields }
+        );
+
+        const updatedDoc = await teacherAttendanceCollection.findOne({ _id: existing._id });
+
+        return res.status(200).json({
+          success: true,
+          message:
+            checkOutStatus === "On Time"
+              ? `${currentShiftRule?.name || shiftId}: সময়মতো প্রস্থান হাজিরা নিশ্চিত হয়েছে!`
+              : `${currentShiftRule?.name || shiftId}: সময়ের পূর্বে প্রস্থান নিশ্চিত হয়েছে! (Early Departure)`,
+          checkOutStatus,
+          shiftId,
+          attendance: updatedDoc,
+        });
+      }
     } catch (error) {
       console.error("Teacher Check-out error:", error);
       res.status(500).json({
@@ -533,6 +719,10 @@ function teacherRoutes(collections) {
         date: dateStr,
       });
 
+      const category = getTeacherCategory(user.designation);
+      const shiftRules = getTeacherShiftRules(category);
+      const activeShiftId = getActiveTeacherShift(category);
+
       res.status(200).json({
         success: true,
         today: dateStr,
@@ -544,6 +734,9 @@ function teacherRoutes(collections) {
           designation: user.designation,
           profileImage: user.profileImage,
         },
+        category, // 'regular' | 'residential' | 'hifz'
+        shiftRules: shiftRules || null,
+        activeShiftId: activeShiftId || null,
         attendance: attendanceRecord || null,
         madrasaLocation: MADRASA_LOCATION,
         rules: ATTENDANCE_RULES,
@@ -606,26 +799,11 @@ function teacherRoutes(collections) {
       const { dateStr: todayStr } = getDhakaTime();
       const targetDate = dateParam || todayStr;
 
-      let teacherUsers = [];
-      if (usersCollection) {
-        teacherUsers = await usersCollection
-          .find({ role: { $regex: /^teacher$/i } })
-          .toArray()
-          .catch(() => []);
-      }
-
       const teachersProfileList = teachersCollection
         ? await teachersCollection.find({}).toArray().catch(() => [])
         : [];
 
-      const teacherProfileByEmail = new Map();
-      teachersProfileList.forEach((t) => {
-        if (t.email) {
-          teacherProfileByEmail.set(t.email.toLowerCase(), t);
-        }
-      });
-
-      const totalTeachersCount = teacherUsers.length;
+      const totalTeachersCount = teachersProfileList.length;
 
       const attendanceLogs = await teacherAttendanceCollection
         .find({ date: targetDate })
@@ -653,21 +831,20 @@ function teacherRoutes(collections) {
       const unifiedList = [];
       const processedEmails = new Set();
 
-      for (const teacher of teacherUsers) {
+      for (const teacher of teachersProfileList) {
         const emailLower = (teacher.email || "").toLowerCase();
-        processedEmails.add(emailLower);
+        if (emailLower) processedEmails.add(emailLower);
 
-        const profile = teacherProfileByEmail.get(emailLower);
-        const attendance = attendanceByEmail.get(emailLower);
+        const attendance = emailLower ? attendanceByEmail.get(emailLower) : null;
 
         unifiedList.push({
           teacherId: teacher._id.toString(),
           teacherName:
-            teacher.name || profile?.fullName || profile?.name || "নাম পাওয়া যায়নি",
+            teacher.fullName || teacher.name || "নাম পাওয়া যায়নি",
           teacherEmail: teacher.email || "",
-          designation: profile?.designation || teacher.designation || "শিক্ষক",
-          phone: profile?.phone || teacher.phone || "",
-          profileImage: teacher.image || profile?.profileImage || "",
+          designation: teacher.designation || "শিক্ষক",
+          phone: teacher.phone || teacher.mobile || "",
+          profileImage: teacher.profileImage || teacher.image || "",
           date: targetDate,
           hasCheckedIn: !!attendance?.checkInTime,
           checkInTime: attendance?.checkInTime || null,
@@ -680,6 +857,8 @@ function teacherRoutes(collections) {
           checkOutLocation: attendance?.checkOutLocation || null,
           checkOutComment: attendance?.checkOutComment || null,
           attendanceId: attendance?._id?.toString() || null,
+          category: attendance?.category || getTeacherCategory(teacher.designation),
+          shifts: attendance?.shifts || null,
         });
       }
 
@@ -690,7 +869,7 @@ function teacherRoutes(collections) {
             teacherId: attendance.teacherId || attendance._id.toString(),
             teacherName: attendance.teacherName || attendance.teacherEmail,
             teacherEmail: attendance.teacherEmail,
-            designation: "শিক্ষক",
+            designation: attendance.teacherDesignation || "শিক্ষক",
             phone: "",
             profileImage: "",
             date: targetDate,
@@ -705,6 +884,8 @@ function teacherRoutes(collections) {
             checkOutLocation: attendance.checkOutLocation || null,
             checkOutComment: attendance.checkOutComment || null,
             attendanceId: attendance._id.toString(),
+            category: attendance.category || getTeacherCategory(attendance.teacherDesignation || "শিক্ষক"),
+            shifts: attendance.shifts || null,
           });
         }
       }
@@ -762,24 +943,9 @@ function teacherRoutes(collections) {
       const currentMonth = dateStr.slice(0, 7);
       const month = req.query.month || currentMonth;
 
-      let teacherUsers = [];
-      if (usersCollection) {
-        teacherUsers = await usersCollection
-          .find({ role: { $regex: /^teacher$/i } })
-          .toArray()
-          .catch(() => []);
-      }
-
       const teachersProfileList = teachersCollection
         ? await teachersCollection.find({}).toArray().catch(() => [])
         : [];
-
-      const teacherProfileByEmail = new Map();
-      teachersProfileList.forEach((t) => {
-        if (t.email) {
-          teacherProfileByEmail.set(t.email.toLowerCase(), t);
-        }
-      });
 
       const attendanceLogs = await teacherAttendanceCollection
         .find({ date: { $regex: `^${month}` } })
@@ -800,37 +966,71 @@ function teacherRoutes(collections) {
       });
 
       const teacherSummaries = [];
-      const processedEmails = new Set();
 
-      for (const teacher of teacherUsers) {
+      for (const teacher of teachersProfileList) {
         const emailLower = (teacher.email || "").toLowerCase();
-        processedEmails.add(emailLower);
-
-        const profile = teacherProfileByEmail.get(emailLower);
         const logs = logsByEmail.get(emailLower) || [];
 
         const presentLogs = logs.filter((l) => !!l.checkInTime);
         const presentDays = presentLogs.length;
-        const onTimeDays = logs.filter((l) => l.checkInStatus === "On Time").length;
-        const lateDays = logs.filter((l) => l.checkInStatus === "Late").length;
-        const earlyExitDays = logs.filter((l) => l.checkOutStatus === "Early").length;
+        const onTimeDays = logs.filter((l) => {
+          if (l.shifts) {
+            const shiftValues = Object.values(l.shifts);
+            if (shiftValues.length > 0) {
+              return shiftValues.every((s) => s.checkInStatus === "On Time");
+            }
+          }
+          return l.checkInStatus === "On Time";
+        }).length;
+        const lateDays = logs.filter((l) => {
+          if (l.shifts) {
+            const shiftValues = Object.values(l.shifts);
+            if (shiftValues.some((s) => s.checkInStatus === "Late")) {
+              return true;
+            }
+          }
+          return l.checkInStatus === "Late";
+        }).length;
+        const earlyExitDays = logs.filter((l) => {
+          if (l.shifts) {
+            const shiftValues = Object.values(l.shifts);
+            if (shiftValues.some((s) => s.checkOutStatus === "Early")) {
+              return true;
+            }
+          }
+          return l.checkOutStatus === "Early";
+        }).length;
         const absentDays = Math.max(0, totalWorkingDays - presentDays);
         const attendanceRate =
           totalWorkingDays > 0 ? Math.round((presentDays / totalWorkingDays) * 100) : 0;
 
-        const lateComments = logs
-          .filter((l) => l.checkInComment)
-          .map((l) => ({ date: l.date, comment: l.checkInComment }));
-        const earlyComments = logs
-          .filter((l) => l.checkOutComment)
-          .map((l) => ({ date: l.date, comment: l.checkOutComment }));
+        const lateComments = [];
+        const earlyComments = [];
+        logs.forEach((l) => {
+          if (l.checkInComment) {
+            lateComments.push({ date: l.date, comment: l.checkInComment });
+          }
+          if (l.checkOutComment) {
+            earlyComments.push({ date: l.date, comment: l.checkOutComment });
+          }
+          if (l.shifts) {
+            Object.values(l.shifts).forEach((s) => {
+              if (s.checkInComment && s.checkInComment !== l.checkInComment) {
+                lateComments.push({ date: l.date, comment: `${s.name || s.shiftId}: ${s.checkInComment}` });
+              }
+              if (s.checkOutComment && s.checkOutComment !== l.checkOutComment) {
+                earlyComments.push({ date: l.date, comment: `${s.name || s.shiftId}: ${s.checkOutComment}` });
+              }
+            });
+          }
+        });
 
         teacherSummaries.push({
           teacherId: teacher._id.toString(),
-          teacherName: teacher.name || profile?.fullName || profile?.name || "নাম পাওয়া যায়নি",
+          teacherName: teacher.fullName || teacher.name || "নাম পাওয়া যায়নি",
           teacherEmail: teacher.email || "",
-          designation: profile?.designation || teacher.designation || "শিক্ষক",
-          phone: profile?.phone || teacher.phone || "",
+          designation: teacher.designation || "শিক্ষক",
+          phone: teacher.phone || teacher.mobile || "",
           presentDays,
           onTimeDays,
           lateDays,
@@ -845,10 +1045,11 @@ function teacherRoutes(collections) {
       res.status(200).json({
         success: true,
         month,
-        totalTeachers: teacherUsers.length,
+        totalTeachers: teachersProfileList.length,
         totalWorkingDays,
         distinctDates,
         summary: teacherSummaries,
+        teachersSummary: teacherSummaries,
       });
     } catch (error) {
       console.error("Monthly attendance summary error:", error);
