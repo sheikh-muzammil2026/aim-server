@@ -13,16 +13,18 @@ const getIdFilter = (id) => {
 };
 
 const getTargetCollection = async (db) => {
+  const userCount = await db.collection("user").countDocuments().catch(() => 0);
+  if (userCount > 0) return db.collection("user");
   const usersCount = await db.collection("users").countDocuments().catch(() => 0);
   return usersCount > 0 ? db.collection("users") : db.collection("user");
 };
 
 const resolveUserAndCol = async (db, id) => {
   const filter = getIdFilter(id);
-  let user = await db.collection("users").findOne(filter).catch(() => null);
-  if (user) return { col: db.collection("users"), user, filter };
-  user = await db.collection("user").findOne(filter).catch(() => null);
+  let user = await db.collection("user").findOne(filter).catch(() => null);
   if (user) return { col: db.collection("user"), user, filter };
+  user = await db.collection("users").findOne(filter).catch(() => null);
+  if (user) return { col: db.collection("users"), user, filter };
   const col = await getTargetCollection(db);
   return { col, user: null, filter };
 };

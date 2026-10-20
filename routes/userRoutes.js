@@ -64,6 +64,16 @@ function userRoutes(collections, helpers) {
           email: updatedUser.email,
           image: updatedUser.image,
           role: updatedUser.role,
+          permissions: Array.isArray(updatedUser.permissions)
+            ? updatedUser.permissions
+            : [],
+          isBanned: Boolean(
+            updatedUser.isBanned || updatedUser.status === "banned",
+          ),
+          status:
+            updatedUser.isBanned || updatedUser.status === "banned"
+              ? "banned"
+              : "active",
         },
       });
     } catch (error) {
@@ -400,6 +410,10 @@ function userRoutes(collections, helpers) {
           name: user.name,
           email: user.email,
           role: user.role,
+          permissions: Array.isArray(user.permissions) ? user.permissions : [],
+          isBanned: Boolean(user.isBanned || user.status === "banned"),
+          status:
+            user.isBanned || user.status === "banned" ? "banned" : "active",
           image: user.image || "",
           phone: user.phone || "",
           createdAt: user.createdAt,

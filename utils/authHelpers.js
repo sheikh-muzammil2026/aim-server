@@ -101,6 +101,7 @@ function createAuthHelpers(collections) {
         email: user.email,
         name: user.name,
         role: (user.role || "").toLowerCase(),
+        permissions: Array.isArray(user.permissions) ? user.permissions : [],
       };
     }
 
