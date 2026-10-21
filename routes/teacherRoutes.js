@@ -18,7 +18,7 @@ const {
 
 function teacherRoutes(collections) {
   const router = express.Router();
-  const { teachersCollection, teacherAttendanceCollection } = collections;
+  const { teachersCollection, teacherAttendanceCollection, usersCollection } = collections;
 
   /**
    * শিক্ষকের প্রোফাইল সেভ বা আপডেট করা (POST / Upsert)
@@ -159,12 +159,14 @@ function teacherRoutes(collections) {
       if (usersCollection) {
         teacherUsers = await usersCollection
           .find({ role: { $regex: /^teacher$/i } })
+          .sort({ order: 1, priority: 1, createdAt: 1 })
           .toArray()
           .catch(() => []);
       }
 
       const teachersProfiles = await teachersCollection
         .find({})
+        .sort({ order: 1, priority: 1, createdAt: 1 })
         .toArray()
         .catch(() => []);
 
@@ -194,18 +196,30 @@ function teacherRoutes(collections) {
             .join(", ");
         }
 
+        const name = profile?.fullName?.trim() || profile?.name?.trim() || user.name?.trim() || "সম্মানিত শিক্ষক";
+        const designation = profile?.designation?.trim() || user.designation?.trim() || "শিক্ষক";
+        const department = profile?.department?.trim() || profile?.subject?.trim() || "";
+        const image = profile?.profileImage || profile?.image || user.image || "";
+
         faculty.push({
           id: user._id?.toString() || profile?._id?.toString() || `faculty-${index + 1}`,
-          name: profile?.fullName?.trim() || user.name?.trim() || "সম্মানিত শিক্ষক",
-          designation: profile?.designation?.trim() || user.designation?.trim() || "শিক্ষক",
-          department: profile?.department?.trim() || profile?.subject?.trim() || "",
-          subject: profile?.subject?.trim() || profile?.department?.trim() || "",
+          _id: profile?._id?.toString() || user._id?.toString(),
+          name,
+          fullName: name,
+          designation,
+          department,
+          subject: department,
           education: education || "উচ্চতর ইসলামী ও সাধারণ শিক্ষা",
-          image: profile?.profileImage || profile?.image || user.image || "",
+          image,
+          profileImage: image,
           email: user.email || profile?.email || "",
           phone: profile?.phone || profile?.mobile || user.phone || "",
           socialLinks: profile?.socialLinks || {},
           bio: profile?.bio || "",
+          academic: Array.isArray(profile?.academic) ? profile.academic : [],
+          experience: Array.isArray(profile?.experience) ? profile.experience : [],
+          order: typeof profile?.order === "number" ? profile.order : typeof user?.order === "number" ? user.order : index + 1,
+          priority: typeof profile?.priority === "number" ? profile.priority : typeof user?.priority === "number" ? user.priority : 99,
         });
       });
 
@@ -223,27 +237,74 @@ function teacherRoutes(collections) {
                 .join(", ");
             }
 
+            const name = profile.fullName?.trim() || profile.name?.trim() || "সম্মানিত শিক্ষক";
+            const designation = profile.designation?.trim() || "শিক্ষক";
+            const department = profile.department?.trim() || profile.subject?.trim() || "";
+            const image = profile.profileImage || profile.image || "";
+
             faculty.push({
               id: profile._id?.toString() || `faculty-ext-${index + 1}`,
-              name: profile.fullName?.trim() || profile.name?.trim() || "সম্মানিত শিক্ষক",
-              designation: profile.designation?.trim() || "শিক্ষক",
-              department: profile.department?.trim() || profile.subject?.trim() || "",
-              subject: profile.subject?.trim() || profile.department?.trim() || "",
+              _id: profile._id?.toString(),
+              name,
+              fullName: name,
+              designation,
+              department,
+              subject: department,
               education: education || "উচ্চতর ইসলামী ও সাধারণ শিক্ষা",
-              image: profile.profileImage || profile.image || "",
+              image,
+              profileImage: image,
               email: profile.email || "",
               phone: profile.phone || profile.mobile || "",
               socialLinks: profile.socialLinks || {},
               bio: profile.bio || "",
+              academic: Array.isArray(profile.academic) ? profile.academic : [],
+              experience: Array.isArray(profile.experience) ? profile.experience : [],
+              order: typeof profile.order === "number" ? profile.order : index + 1,
+              priority: typeof profile.priority === "number" ? profile.priority : 99,
             });
           }
         }
       });
 
+      // Sort by order ascending, then priority ascending
+      faculty.sort((a, b) => {
+        const orderA = typeof a.order === "number" ? a.order : 999;
+        const orderB = typeof b.order === "number" ? b.order : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        const priorityA = typeof a.priority === "number" ? a.priority : 99;
+        const priorityB = typeof b.priority === "number" ? b.priority : 99;
+        return priorityA - priorityB;
+      });
+
+      let filteredFaculty = faculty;
+
+      if (req.query.department && req.query.department !== "all") {
+        const deptFilter = req.query.department.trim().toLowerCase();
+        filteredFaculty = filteredFaculty.filter(
+          (t) =>
+            (t.department && t.department.toLowerCase() === deptFilter) ||
+            (t.subject && t.subject.toLowerCase() === deptFilter)
+        );
+      }
+
+      if (req.query.search && req.query.search.trim()) {
+        const searchFilter = req.query.search.trim().toLowerCase();
+        filteredFaculty = filteredFaculty.filter(
+          (t) =>
+            t.name?.toLowerCase().includes(searchFilter) ||
+            t.fullName?.toLowerCase().includes(searchFilter) ||
+            t.designation?.toLowerCase().includes(searchFilter) ||
+            t.department?.toLowerCase().includes(searchFilter) ||
+            t.subject?.toLowerCase().includes(searchFilter) ||
+            t.education?.toLowerCase().includes(searchFilter) ||
+            t.phone?.includes(searchFilter)
+        );
+      }
+
       res.status(200).json({
         success: true,
-        count: faculty.length,
-        data: faculty,
+        count: filteredFaculty.length,
+        data: filteredFaculty,
       });
     } catch (error) {
       console.error("Fetch faculty error:", error);

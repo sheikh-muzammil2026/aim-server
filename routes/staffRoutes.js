@@ -10,70 +10,7 @@ const {
   MADRASA_LOCATION,
 } = require("../utils/attendanceConfig");
 
-const INITIAL_STAFF_MEMBERS = [
-  {
-    fullName: "মুহাম্মদ আব্দুল্লাহ",
-    designation: "অফিস সহকারী (Office Assistant)",
-    dateOfBirth: "15/05/1992",
-    phone: "01712345678",
-    email: "abdullah.office@aimhabiganj.edu.bd",
-    bloodGroup: "A (+)",
-    staffId: "ID NO-AIM ST-001",
-    profileImage: "",
-    address: "হবিগঞ্জ সদর, হবিগঞ্জ",
-    joiningDate: "01/01/2023",
-  },
-  {
-    fullName: "মোঃ রফিকুল ইসলাম",
-    designation: "হিসাব কর্মকর্তা (Accountant)",
-    dateOfBirth: "10/08/1990",
-    phone: "01812345678",
-    email: "rafiq.accounts@aimhabiganj.edu.bd",
-    bloodGroup: "B (+)",
-    staffId: "ID NO-AIM ST-002",
-    profileImage: "",
-    address: "বানিয়াচং, হবিগঞ্জ",
-    joiningDate: "15/03/2022",
-  },
-  {
-    fullName: "মাওলানা হাবিবুর রহমান",
-    designation: "গ্রন্থাগারিক (Librarian)",
-    dateOfBirth: "20/11/1988",
-    phone: "01912345678",
-    email: "habibur.lib@aimhabiganj.edu.bd",
-    bloodGroup: "O (+)",
-    staffId: "ID NO-AIM ST-003",
-    profileImage: "",
-    address: "নবীগঞ্জ, হবিগঞ্জ",
-    joiningDate: "01/06/2021",
-  },
-  {
-    fullName: "মোঃ নূরুল আমিন",
-    designation: "নিরাপত্তা প্রহরী (Security Guard)",
-    dateOfBirth: "05/01/1985",
-    phone: "01612345678",
-    email: "nurul.security@aimhabiganj.edu.bd",
-    bloodGroup: "AB (+)",
-    staffId: "ID NO-AIM ST-004",
-    profileImage: "",
-    address: "চুনারুঘাট, হবিগঞ্জ",
-    joiningDate: "10/02/2020",
-  },
-  {
-    fullName: "মোঃ শামসুল হক",
-    designation: "বাবুর্চি ও ডাইনিং সহকারী (Chef)",
-    dateOfBirth: "12/09/1987",
-    phone: "01512345678",
-    email: "shamsul.chef@aimhabiganj.edu.bd",
-    bloodGroup: "O (+)",
-    staffId: "ID NO-AIM ST-005",
-    profileImage: "",
-    address: "মাধবপুর, হবিগঞ্জ",
-    joiningDate: "01/08/2021",
-  },
-];
-
-function staffRoutes(collections) {
+function staffRoutes(collections, authHelpers, database) {
   const router = express.Router();
   const { staffCollection, staffAttendanceCollection } = collections;
 
@@ -98,7 +35,9 @@ function staffRoutes(collections) {
     }
 
     if (!staffDoc && staffId && staffCollection) {
-      staffDoc = await staffCollection.findOne({ staffId: String(staffId).trim() });
+      staffDoc = await staffCollection.findOne({
+        staffId: String(staffId).trim(),
+      });
     }
 
     if (!staffDoc && !email && !staffId) {
@@ -123,35 +62,110 @@ function staffRoutes(collections) {
     };
   }
 
+  // Helper to resolve active staff collection (staffs or staff)
+  const getActiveStaffCol = async () => {
+    if (collections.staffsCollection) return collections.staffsCollection;
+    if (database) {
+      try {
+        const count = await database.collection("staffs").countDocuments();
+        if (count > 0) return database.collection("staffs");
+      } catch (_) {}
+    }
+    return staffCollection;
+  };
+
   /**
-   * 1. GET /api/staff
+   * 1. GET /api/staff & GET /api/staffs
    * Public directory of staff members
    */
-  router.get("/api/staff", async (req, res) => {
+  const getPublicStaffHandler = async (req, res) => {
     try {
-      const staffProfiles = staffCollection
-        ? await staffCollection.find({}).toArray().catch(() => [])
+      const targetCol = await getActiveStaffCol();
+      const staffProfiles = targetCol
+        ? await targetCol
+            .find({})
+            .sort({ order: 1, priority: 1, createdAt: 1 })
+            .toArray()
+            .catch(() => [])
         : [];
 
-      const staffList = staffProfiles.map((profile, index) => ({
-        id: profile._id?.toString() || `staff-${index + 1}`,
-        name: profile?.fullName?.trim() || profile?.name?.trim() || "কর্মকর্তা / কর্মচারী",
-        fullName: profile?.fullName?.trim() || profile?.name?.trim() || "কর্মকর্তা / কর্মচারী",
-        role: profile?.designation?.trim() || "স্টাফ",
-        designation: profile?.designation?.trim() || "স্টাফ",
-        department: profile?.department?.trim() || "প্রশাসন ও সেবা",
-        phone: profile?.phone || profile?.mobile || "",
-        contact: profile?.phone || profile?.mobile || "",
-        email: profile?.email || "",
-        staffId: profile?.staffId || "",
-        bloodGroup: profile?.bloodGroup || "",
-        joiningDate: profile?.joiningDate || "",
-        dateOfBirth: profile?.dateOfBirth || "",
-        address: profile?.address || "",
-        image: profile?.profileImage || profile?.image || "",
-        profileImage: profile?.profileImage || profile?.image || "",
-        bio: profile?.bio || "",
-      }));
+      let staffList = staffProfiles.map((profile, index) => {
+        const name =
+          profile?.fullName?.trim() ||
+          profile?.name?.trim() ||
+          "কর্মকর্তা / কর্মচারী";
+        const designation =
+          profile?.designation?.trim() || profile?.role?.trim() || "স্টাফ";
+        const image = profile?.profileImage || profile?.image || "";
+        const phone =
+          profile?.phone || profile?.mobile || profile?.contact || "";
+
+        return {
+          id: profile._id?.toString() || `staff-${index + 1}`,
+          _id: profile._id?.toString(),
+          name,
+          fullName: name,
+          role: designation,
+          designation,
+          department: profile?.department?.trim() || "প্রশাসন ও সেবা",
+          phone,
+          contact: phone,
+          email: profile?.email || "",
+          staffId: profile?.staffId || "",
+          bloodGroup: profile?.bloodGroup || profile?.blood || "",
+          joiningDate: profile?.joiningDate || "",
+          dateOfBirth: profile?.dateOfBirth || profile?.dob || "",
+          address: profile?.address || "",
+          image,
+          profileImage: image,
+          bio: profile?.bio || "",
+          order: typeof profile?.order === "number" ? profile.order : index + 1,
+          priority:
+            typeof profile?.priority === "number" ? profile.priority : 99,
+        };
+      });
+
+      // Sort by order ascending, then priority ascending
+      staffList.sort((a, b) => {
+        const orderA = typeof a.order === "number" ? a.order : 999;
+        const orderB = typeof b.order === "number" ? b.order : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        const priorityA = typeof a.priority === "number" ? a.priority : 99;
+        const priorityB = typeof b.priority === "number" ? b.priority : 99;
+        return priorityA - priorityB;
+      });
+
+      // Filter by department if supplied
+      if (req.query.department && req.query.department !== "all") {
+        const deptFilter = req.query.department.trim().toLowerCase();
+        staffList = staffList.filter(
+          (s) => s.department && s.department.toLowerCase() === deptFilter,
+        );
+      }
+
+      // Filter by role/designation if supplied
+      if (req.query.role && req.query.role !== "all") {
+        const roleFilter = req.query.role.trim().toLowerCase();
+        staffList = staffList.filter(
+          (s) =>
+            (s.designation && s.designation.toLowerCase() === roleFilter) ||
+            (s.role && s.role.toLowerCase() === roleFilter),
+        );
+      }
+
+      // Filter by search query if supplied
+      if (req.query.search && req.query.search.trim()) {
+        const searchFilter = req.query.search.trim().toLowerCase();
+        staffList = staffList.filter(
+          (s) =>
+            s.name?.toLowerCase().includes(searchFilter) ||
+            s.fullName?.toLowerCase().includes(searchFilter) ||
+            s.designation?.toLowerCase().includes(searchFilter) ||
+            s.role?.toLowerCase().includes(searchFilter) ||
+            s.staffId?.toLowerCase().includes(searchFilter) ||
+            s.phone?.includes(searchFilter),
+        );
+      }
 
       res.status(200).json({
         success: true,
@@ -159,14 +173,17 @@ function staffRoutes(collections) {
         data: staffList,
       });
     } catch (error) {
-      console.error("GET /api/staff error:", error);
+      console.error("GET /api/staff(s) error:", error);
       res.status(500).json({
         success: false,
         message: "কর্মকর্তা ও কর্মচারীদের তথ্য লোড করতে সমস্যা হয়েছে।",
         error: error.message,
       });
     }
-  });
+  };
+
+  router.get("/api/staff", getPublicStaffHandler);
+  router.get("/api/staffs", getPublicStaffHandler);
 
   /**
    * 2. GET /api/staff/me
@@ -187,7 +204,12 @@ function staffRoutes(collections) {
       const attendanceFilter = {
         $or: [
           ...(user.email
-            ? [{ staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") }, date: todayStr }]
+            ? [
+                {
+                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  date: todayStr,
+                },
+              ]
             : []),
           ...(user.staffId ? [{ staffId: user.staffId, date: todayStr }] : []),
         ],
@@ -213,10 +235,13 @@ function staffRoutes(collections) {
         : [];
 
       const presentDays = monthlyLogs.filter((l) => !!l.checkInTime).length;
-      const onTimeDays = monthlyLogs.filter((l) => l.checkInStatus === "On Time").length;
+      const onTimeDays = monthlyLogs.filter(
+        (l) => l.checkInStatus === "On Time",
+      ).length;
       let totalMinutesWorked = 0;
       monthlyLogs.forEach((l) => {
-        if (typeof l.durationMinutes === "number") totalMinutesWorked += l.durationMinutes;
+        if (typeof l.durationMinutes === "number")
+          totalMinutesWorked += l.durationMinutes;
       });
 
       const profileData = user.staffProfile || {};
@@ -242,7 +267,10 @@ function staffRoutes(collections) {
           presentDays,
           onTimeDays,
           totalHoursWorked: Math.round((totalMinutesWorked / 60) * 10) / 10,
-          onTimeRate: presentDays > 0 ? Math.round((onTimeDays / presentDays) * 100) : 100,
+          onTimeRate:
+            presentDays > 0
+              ? Math.round((onTimeDays / presentDays) * 100)
+              : 100,
         },
         todayAttendance: todayAttendance || null,
       });
@@ -279,7 +307,10 @@ function staffRoutes(collections) {
       if (lat !== undefined && lng !== undefined && !bypassGeofence) {
         effectiveLat = Number(lat);
         effectiveLng = Number(lng);
-        const geofenceResult = isWithinMadrasaGeofence(effectiveLat, effectiveLng);
+        const geofenceResult = isWithinMadrasaGeofence(
+          effectiveLat,
+          effectiveLng,
+        );
 
         if (!geofenceResult.isInside) {
           return res.status(403).json({
@@ -297,7 +328,12 @@ function staffRoutes(collections) {
       const queryFilter = {
         $or: [
           ...(user.email
-            ? [{ staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") }, date: dateStr }]
+            ? [
+                {
+                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  date: dateStr,
+                },
+              ]
             : []),
           ...(user.staffId ? [{ staffId: user.staffId, date: dateStr }] : []),
         ],
@@ -307,7 +343,8 @@ function staffRoutes(collections) {
       if (existing && existing.checkInTime) {
         return res.status(400).json({
           success: false,
-          message: "আপনি আজকের ১ম টার্ম (সকালের চেক-ইন) ইতিমধ্যে সম্পন্ন করেছেন।",
+          message:
+            "আপনি আজকের ১ম টার্ম (সকালের চেক-ইন) ইতিমধ্যে সম্পন্ন করেছেন।",
           attendance: existing,
         });
       }
@@ -320,7 +357,8 @@ function staffRoutes(collections) {
           success: false,
           requiresComment: true,
           status: "Late",
-          message: "দেরিতে উপস্থিতির কারণ উল্লেখ করা বাধ্যতামূলক (ভোর ৫:৩০ অতিক্রান্ত)।",
+          message:
+            "দেরিতে উপস্থিতির কারণ উল্লেখ করা বাধ্যতামূলক (ভোর ৫:৩০ অতিক্রান্ত)।",
         });
       }
       const attendanceDoc = {
@@ -354,7 +392,7 @@ function staffRoutes(collections) {
               checkInLocation: attendanceDoc.checkInLocation,
               updatedAt: now,
             },
-          }
+          },
         );
         attendanceDoc._id = existing._id;
       } else {
@@ -406,7 +444,10 @@ function staffRoutes(collections) {
       if (lat !== undefined && lng !== undefined && !bypassGeofence) {
         effectiveLat = Number(lat);
         effectiveLng = Number(lng);
-        const geofenceResult = isWithinMadrasaGeofence(effectiveLat, effectiveLng);
+        const geofenceResult = isWithinMadrasaGeofence(
+          effectiveLat,
+          effectiveLng,
+        );
 
         if (!geofenceResult.isInside) {
           return res.status(403).json({
@@ -425,7 +466,12 @@ function staffRoutes(collections) {
       const queryFilter = {
         $or: [
           ...(user.email
-            ? [{ staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") }, date: dateStr }]
+            ? [
+                {
+                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  date: dateStr,
+                },
+              ]
             : []),
           ...(user.staffId ? [{ staffId: user.staffId, date: dateStr }] : []),
         ],
@@ -444,7 +490,8 @@ function staffRoutes(collections) {
       if (existing.checkOutTime) {
         return res.status(400).json({
           success: false,
-          message: "আপনি আজকের ২য় টার্মের প্রস্থান হাজিরা ইতিমধ্যে সম্পন্ন করেছেন।",
+          message:
+            "আপনি আজকের ২য় টার্মের প্রস্থান হাজিরা ইতিমধ্যে সম্পন্ন করেছেন।",
           attendance: existing,
         });
       }
@@ -456,7 +503,11 @@ function staffRoutes(collections) {
       const minutes = durationMinutes % 60;
       const durationText = `${hours} ঘণ্টা ${minutes} মিনিট`;
 
-      const checkOutComment = (body.checkOutComment || body.comment || "").trim();
+      const checkOutComment = (
+        body.checkOutComment ||
+        body.comment ||
+        ""
+      ).trim();
 
       // Enforce early check-out reason comment
       if (checkOutStatus === "Early" && !checkOutComment) {
@@ -464,7 +515,8 @@ function staffRoutes(collections) {
           success: false,
           requiresComment: true,
           status: "Early",
-          message: "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক (রাত ১০:০০ এর পূর্বে)।",
+          message:
+            "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক (রাত ১০:০০ এর পূর্বে)।",
         });
       }
 
@@ -483,7 +535,7 @@ function staffRoutes(collections) {
 
       await staffAttendanceCollection.updateOne(
         { _id: existing._id },
-        { $set: updateFields }
+        { $set: updateFields },
       );
 
       const updatedAttendance = {
@@ -499,7 +551,8 @@ function staffRoutes(collections) {
         statusMsg =
           "সময়ের পূর্বে ২য় টার্ম প্রস্থান হাজিরা নিশ্চিত হয়েছে (Early Departure - রাত ১০:০০ এর পূর্বে)";
       } else {
-        statusMsg = "বিলম্বিত ২য় টার্ম প্রস্থান হাজিরা নিশ্চিত হয়েছে (রাত ১০:১০ এর পর)";
+        statusMsg =
+          "বিলম্বিত ২য় টার্ম প্রস্থান হাজিরা নিশ্চিত হয়েছে (রাত ১০:১০ এর পর)";
       }
 
       res.status(200).json({
@@ -536,7 +589,12 @@ function staffRoutes(collections) {
       const queryFilter = {
         $or: [
           ...(user.email
-            ? [{ staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") }, date: dateStr }]
+            ? [
+                {
+                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  date: dateStr,
+                },
+              ]
             : []),
           ...(user.staffId ? [{ staffId: user.staffId, date: dateStr }] : []),
         ],
@@ -615,20 +673,36 @@ function staffRoutes(collections) {
 
       const totalRecordedDays = monthlyLogs.length;
       const presentDays = monthlyLogs.filter((l) => !!l.checkInTime).length;
-      const onTimeCheckIns = monthlyLogs.filter((l) => l.checkInStatus === "On Time").length;
-      const lateCheckIns = monthlyLogs.filter((l) => l.checkInStatus === "Late").length;
-      const completedBothTerms = monthlyLogs.filter((l) => !!l.checkInTime && !!l.checkOutTime).length;
-      const onTimeCheckOuts = monthlyLogs.filter((l) => l.checkOutStatus === "On Time").length;
-      const earlyCheckOuts = monthlyLogs.filter((l) => l.checkOutStatus === "Early").length;
-      const overtimeCheckOuts = monthlyLogs.filter((l) => l.checkOutStatus === "Overtime").length;
+      const onTimeCheckIns = monthlyLogs.filter(
+        (l) => l.checkInStatus === "On Time",
+      ).length;
+      const lateCheckIns = monthlyLogs.filter(
+        (l) => l.checkInStatus === "Late",
+      ).length;
+      const completedBothTerms = monthlyLogs.filter(
+        (l) => !!l.checkInTime && !!l.checkOutTime,
+      ).length;
+      const onTimeCheckOuts = monthlyLogs.filter(
+        (l) => l.checkOutStatus === "On Time",
+      ).length;
+      const earlyCheckOuts = monthlyLogs.filter(
+        (l) => l.checkOutStatus === "Early",
+      ).length;
+      const overtimeCheckOuts = monthlyLogs.filter(
+        (l) => l.checkOutStatus === "Overtime",
+      ).length;
 
       let totalMinutesWorked = 0;
       monthlyLogs.forEach((l) => {
-        if (typeof l.durationMinutes === "number") totalMinutesWorked += l.durationMinutes;
+        if (typeof l.durationMinutes === "number")
+          totalMinutesWorked += l.durationMinutes;
       });
 
       const totalHoursWorked = Math.round((totalMinutesWorked / 60) * 10) / 10;
-      const onTimeRate = presentDays > 0 ? Math.round((onTimeCheckIns / presentDays) * 100) : 100;
+      const onTimeRate =
+        presentDays > 0
+          ? Math.round((onTimeCheckIns / presentDays) * 100)
+          : 100;
 
       res.status(200).json({
         success: true,
@@ -696,7 +770,10 @@ function staffRoutes(collections) {
         ];
       }
 
-      const rawStaff = await staffCollection.find(query).sort({ createdAt: 1 }).toArray();
+      const rawStaff = await staffCollection
+        .find(query)
+        .sort({ createdAt: 1 })
+        .toArray();
 
       const staffList = rawStaff.map((s, index) => {
         const idStr = s._id ? s._id.toString() : `staff-${index + 1}`;
@@ -748,7 +825,8 @@ function staffRoutes(collections) {
       }
 
       const count = await staffCollection.countDocuments();
-      const staffId = body.staffId || `ID NO-AIM ST-${String(count + 1).padStart(3, "0")}`;
+      const staffId =
+        body.staffId || `ID NO-AIM ST-${String(count + 1).padStart(3, "0")}`;
 
       const newDoc = {
         fullName: body.fullName.trim(),
@@ -882,7 +960,10 @@ function staffRoutes(collections) {
       const { dateStr: todayStr } = getDhakaTime();
       const targetDate = dateParam || todayStr;
 
-      const staffList = await staffCollection.find({}).sort({ createdAt: 1 }).toArray();
+      const staffList = await staffCollection
+        .find({})
+        .sort({ createdAt: 1 })
+        .toArray();
       const totalStaffCount = staffList.length;
 
       // Monthly Summary
@@ -891,7 +972,9 @@ function staffRoutes(collections) {
           .find({ date: { $regex: `^${monthParam}` } })
           .toArray();
 
-        const distinctDates = Array.from(new Set(logs.map((l) => l.date))).sort();
+        const distinctDates = Array.from(
+          new Set(logs.map((l) => l.date)),
+        ).sort();
         const totalWorkingDays = distinctDates.length || 1;
 
         const logsByStaffId = new Map();
@@ -903,14 +986,24 @@ function staffRoutes(collections) {
 
         const summary = staffList.map((staff) => {
           const staffLogs =
-            logsByStaffId.get(staff.staffId) || logsByStaffId.get(staff.email) || [];
+            logsByStaffId.get(staff.staffId) ||
+            logsByStaffId.get(staff.email) ||
+            [];
           const presentDays = staffLogs.filter((l) => !!l.checkInTime).length;
-          const onTimeDays = staffLogs.filter((l) => l.checkInStatus === "On Time").length;
-          const lateDays = staffLogs.filter((l) => l.checkInStatus === "Late").length;
-          const earlyExitDays = staffLogs.filter((l) => l.checkOutStatus === "Early").length;
+          const onTimeDays = staffLogs.filter(
+            (l) => l.checkInStatus === "On Time",
+          ).length;
+          const lateDays = staffLogs.filter(
+            (l) => l.checkInStatus === "Late",
+          ).length;
+          const earlyExitDays = staffLogs.filter(
+            (l) => l.checkOutStatus === "Early",
+          ).length;
           const absentDays = Math.max(0, totalWorkingDays - presentDays);
           const attendanceRate =
-            totalWorkingDays > 0 ? Math.round((presentDays / totalWorkingDays) * 100) : 0;
+            totalWorkingDays > 0
+              ? Math.round((presentDays / totalWorkingDays) * 100)
+              : 0;
 
           return {
             staffId: staff.staffId,
@@ -951,16 +1044,17 @@ function staffRoutes(collections) {
       const presentCount = presentStaff.length;
       const absentCount = Math.max(0, totalStaffCount - presentCount);
       const onTimeCount = attendanceLogs.filter(
-        (log) => log.checkInStatus === "On Time"
+        (log) => log.checkInStatus === "On Time",
       ).length;
       const lateCount = attendanceLogs.filter(
-        (log) => log.checkInStatus === "Late"
+        (log) => log.checkInStatus === "Late",
       ).length;
 
       const attendanceMap = new Map();
       attendanceLogs.forEach((log) => {
         if (log.staffId) attendanceMap.set(log.staffId, log);
-        if (log.staffEmail) attendanceMap.set(log.staffEmail.toLowerCase(), log);
+        if (log.staffEmail)
+          attendanceMap.set(log.staffEmail.toLowerCase(), log);
       });
 
       const unifiedList = staffList.map((staff) => {
@@ -996,7 +1090,7 @@ function staffRoutes(collections) {
             s.fullName.toLowerCase().includes(search) ||
             s.designation.toLowerCase().includes(search) ||
             (s.email && s.email.toLowerCase().includes(search)) ||
-            s.staffId.toLowerCase().includes(search)
+            s.staffId.toLowerCase().includes(search),
         );
       }
 
@@ -1005,7 +1099,9 @@ function staffRoutes(collections) {
       } else if (statusFilter === "absent") {
         filteredList = filteredList.filter((s) => !s.hasCheckedIn);
       } else if (statusFilter === "onTime") {
-        filteredList = filteredList.filter((s) => s.checkInStatus === "On Time");
+        filteredList = filteredList.filter(
+          (s) => s.checkInStatus === "On Time",
+        );
       } else if (statusFilter === "late") {
         filteredList = filteredList.filter((s) => s.checkInStatus === "Late");
       }
@@ -1039,8 +1135,14 @@ function staffRoutes(collections) {
   router.post("/api/admin/staff-attendance", async (req, res) => {
     try {
       const body = req.body || {};
-      const { staffId, date, checkInStatus, checkInComment, checkOutStatus, checkOutComment } =
-        body;
+      const {
+        staffId,
+        date,
+        checkInStatus,
+        checkInComment,
+        checkOutStatus,
+        checkOutComment,
+      } = body;
 
       if (!staffId) {
         return res.status(400).json({
@@ -1063,16 +1165,19 @@ function staffRoutes(collections) {
           updatedAt: now,
         };
         if (checkInStatus) updateDoc.checkInStatus = checkInStatus;
-        if (checkInComment !== undefined) updateDoc.checkInComment = checkInComment;
+        if (checkInComment !== undefined)
+          updateDoc.checkInComment = checkInComment;
         if (checkOutStatus !== undefined) {
-          updateDoc.checkOutStatus = checkOutStatus || evaluateStaffCheckOutStatus(now);
+          updateDoc.checkOutStatus =
+            checkOutStatus || evaluateStaffCheckOutStatus(now);
           updateDoc.checkOutTime = now.toISOString();
         }
-        if (checkOutComment !== undefined) updateDoc.checkOutComment = checkOutComment;
+        if (checkOutComment !== undefined)
+          updateDoc.checkOutComment = checkOutComment;
 
         await staffAttendanceCollection.updateOne(
           { _id: existing._id },
-          { $set: updateDoc }
+          { $set: updateDoc },
         );
       } else {
         const newDoc = {
