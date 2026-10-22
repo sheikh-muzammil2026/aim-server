@@ -12,7 +12,7 @@ const {
 
 function staffRoutes(collections, authHelpers, database) {
   const router = express.Router();
-  const { staffCollection, staffAttendanceCollection } = collections;
+  const { staffCollection, staffAttendanceCollection, usersCollection } = collections;
 
   // Helper to resolve staff user from request
   async function getStaffUser(req, body = {}) {
@@ -26,12 +26,19 @@ function staffRoutes(collections, authHelpers, database) {
     const staffId = body.staffId || req.query.staffId;
 
     let staffDoc = null;
+    let userDoc = null;
 
     if (email && staffCollection) {
       const cleanEmail = String(email).trim().toLowerCase();
+      const emailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
       staffDoc = await staffCollection.findOne({
-        email: { $regex: new RegExp(`^${cleanEmail}$`, "i") },
+        email: { $regex: emailRegex },
       });
+      if (!staffDoc && usersCollection) {
+        userDoc = await usersCollection.findOne({
+          email: { $regex: emailRegex },
+        });
+      }
     }
 
     if (!staffDoc && staffId && staffCollection) {
@@ -40,24 +47,26 @@ function staffRoutes(collections, authHelpers, database) {
       });
     }
 
-    if (!staffDoc && !email && !staffId) {
+    if (!staffDoc && !userDoc && !email && !staffId) {
       return null;
     }
 
     const resolvedEmail =
-      staffDoc?.email || (email ? String(email).trim().toLowerCase() : "");
+      staffDoc?.email || userDoc?.email || (email ? String(email).trim().toLowerCase() : "");
     const resolvedName =
-      staffDoc?.fullName || staffDoc?.name || "স্টাফ কর্মকর্তা";
-    const resolvedStaffId = staffDoc?.staffId || staffId || "ID NO-AIM ST-001";
-    const resolvedDesignation = staffDoc?.designation || "স্টাফ";
+      staffDoc?.fullName || staffDoc?.name || userDoc?.name || body.staffName || "সম্মানিত স্টাফ";
+    const resolvedStaffId =
+      staffDoc?.staffId || staffId || (resolvedEmail ? `ST-${resolvedEmail.split("@")[0].toUpperCase()}` : "");
+    const resolvedDesignation =
+      staffDoc?.designation || userDoc?.designation || "স্টাফ";
 
     return {
-      id: staffDoc?._id?.toString() || "staff-user-id",
+      id: staffDoc?._id?.toString() || userDoc?._id?.toString() || resolvedStaffId || resolvedEmail,
       email: resolvedEmail,
       name: resolvedName,
       staffId: resolvedStaffId,
       designation: resolvedDesignation,
-      role: (staffDoc?.role || staffDoc?.designation || "staff").toLowerCase(),
+      role: (staffDoc?.role || userDoc?.role || staffDoc?.designation || "staff").toLowerCase(),
       staffProfile: staffDoc,
     };
   }
@@ -469,7 +478,7 @@ function staffRoutes(collections, authHelpers, database) {
   router.post("/api/staff/attendance/check-in", async (req, res) => {
     try {
       const body = req.body || {};
-      const { lat, lng, bypassGeofence } = body;
+      const { lat, lng, accuracy } = body;
 
       const user = await getStaffUser(req, body);
       if (!user) {
@@ -479,25 +488,51 @@ function staffRoutes(collections, authHelpers, database) {
         });
       }
 
-      let effectiveLat = null;
-      let effectiveLng = null;
+      if (lat === undefined || lng === undefined || lat === null || lng === null) {
+        return res.status(400).json({
+          success: false,
+          message: "ডিভাইসের GPS অবস্থান (Latitude ও Longitude) প্রয়োজন। অনুগ্রহ করে ব্রাউজারের লোকেশন পারমিশন অন করুন।",
+        });
+      }
 
-      if (lat !== undefined && lng !== undefined && !bypassGeofence) {
-        effectiveLat = Number(lat);
-        effectiveLng = Number(lng);
-        const geofenceResult = isWithinMadrasaGeofence(
-          effectiveLat,
-          effectiveLng,
-        );
+      const effectiveLat = Number(lat);
+      const effectiveLng = Number(lng);
+      const effectiveAccuracy = Number.isFinite(Number(accuracy)) ? Math.round(Number(accuracy)) : 0;
 
-        if (!geofenceResult.isInside) {
-          return res.status(403).json({
-            success: false,
-            message: "হাজিরা দিতে আপনাকে অবশ্যই মাদরাসা প্রাঙ্গণে থাকতে হবে।",
-            distance: geofenceResult.distance,
-            threshold: geofenceResult.threshold,
-          });
-        }
+      if (
+        effectiveAccuracy > 0 &&
+        MADRASA_LOCATION.MAX_ALLOWED_ACCURACY_METERS &&
+        effectiveAccuracy > MADRASA_LOCATION.MAX_ALLOWED_ACCURACY_METERS
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `আপনার ডিভাইসের GPS সংকেত অত্যন্ত দুর্বল (Accuracy: ±${effectiveAccuracy} মিটার)। অনুগ্রহ করে খোলা স্থানে গিয়ে পুনরায় লোকেশন রিফ্রেশ করুন।`,
+          accuracy: effectiveAccuracy,
+        });
+      }
+
+      const geofenceResult = isWithinMadrasaGeofence(
+        effectiveLat,
+        effectiveLng,
+        MADRASA_LOCATION.RADIUS_METERS,
+        effectiveAccuracy
+      );
+
+      if (!geofenceResult.isValidCoords) {
+        return res.status(400).json({
+          success: false,
+          message: "অবৈধ GPS স্থানাঙ্ক শনাক্ত হয়েছে। অনুগ্রহ করে পুনরায় লোকেশন রিফ্রেশ করুন।",
+        });
+      }
+
+      if (!geofenceResult.isInside) {
+        return res.status(403).json({
+          success: false,
+          message: `হাজিরা দিতে আপনাকে অবশ্যই মাদরাসা প্রাঙ্গণে (${geofenceResult.threshold} মিটারের মধ্যে) থাকতে হবে। আপনার বর্তমান দূরত্ব: ${geofenceResult.distance} মিটার।`,
+          distance: geofenceResult.distance,
+          threshold: geofenceResult.threshold,
+          accuracy: effectiveAccuracy,
+        });
       }
 
       const { dateStr } = getDhakaTime();
@@ -508,7 +543,7 @@ function staffRoutes(collections, authHelpers, database) {
           ...(user.email
             ? [
                 {
-                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  staffEmail: { $regex: new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
                   date: dateStr,
                 },
               ]
@@ -548,10 +583,12 @@ function staffRoutes(collections, authHelpers, database) {
         checkInTime: now.toISOString(),
         checkInStatus: checkInStatus, // 'On Time' | 'Late'
         checkInComment: checkInComment || null,
-        checkInLocation:
-          effectiveLat !== null && effectiveLng !== null
-            ? { lat: effectiveLat, lng: effectiveLng }
-            : null,
+        checkInLocation: {
+          lat: effectiveLat,
+          lng: effectiveLng,
+          accuracy: effectiveAccuracy,
+          distance: geofenceResult.distance,
+        },
         checkOutTime: null,
         checkOutStatus: null,
         checkOutComment: null,
@@ -606,7 +643,7 @@ function staffRoutes(collections, authHelpers, database) {
   router.post("/api/staff/attendance/check-out", async (req, res) => {
     try {
       const body = req.body || {};
-      const { lat, lng, bypassGeofence } = body;
+      const { lat, lng, accuracy } = body;
 
       const user = await getStaffUser(req, body);
       if (!user) {
@@ -616,25 +653,51 @@ function staffRoutes(collections, authHelpers, database) {
         });
       }
 
-      let effectiveLat = null;
-      let effectiveLng = null;
+      if (lat === undefined || lng === undefined || lat === null || lng === null) {
+        return res.status(400).json({
+          success: false,
+          message: "ডিভাইসের GPS অবস্থান (Latitude ও Longitude) প্রয়োজন। অনুগ্রহ করে ব্রাউজারের লোকেশন পারমিশন অন করুন।",
+        });
+      }
 
-      if (lat !== undefined && lng !== undefined && !bypassGeofence) {
-        effectiveLat = Number(lat);
-        effectiveLng = Number(lng);
-        const geofenceResult = isWithinMadrasaGeofence(
-          effectiveLat,
-          effectiveLng,
-        );
+      const effectiveLat = Number(lat);
+      const effectiveLng = Number(lng);
+      const effectiveAccuracy = Number.isFinite(Number(accuracy)) ? Math.round(Number(accuracy)) : 0;
 
-        if (!geofenceResult.isInside) {
-          return res.status(403).json({
-            success: false,
-            message: "হাজিরা দিতে আপনাকে অবশ্যই মাদরাসা প্রাঙ্গণে থাকতে হবে।",
-            distance: geofenceResult.distance,
-            threshold: geofenceResult.threshold,
-          });
-        }
+      if (
+        effectiveAccuracy > 0 &&
+        MADRASA_LOCATION.MAX_ALLOWED_ACCURACY_METERS &&
+        effectiveAccuracy > MADRASA_LOCATION.MAX_ALLOWED_ACCURACY_METERS
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `আপনার ডিভাইসের GPS সংকেত অত্যন্ত দুর্বল (Accuracy: ±${effectiveAccuracy} মিটার)। অনুগ্রহ করে খোলা স্থানে গিয়ে পুনরায় লোকেশন রিফ্রেশ করুন।`,
+          accuracy: effectiveAccuracy,
+        });
+      }
+
+      const geofenceResult = isWithinMadrasaGeofence(
+        effectiveLat,
+        effectiveLng,
+        MADRASA_LOCATION.RADIUS_METERS,
+        effectiveAccuracy
+      );
+
+      if (!geofenceResult.isValidCoords) {
+        return res.status(400).json({
+          success: false,
+          message: "অবৈধ GPS স্থানাঙ্ক শনাক্ত হয়েছে। অনুগ্রহ করে পুনরায় লোকেশন রিফ্রেশ করুন।",
+        });
+      }
+
+      if (!geofenceResult.isInside) {
+        return res.status(403).json({
+          success: false,
+          message: `হাজিরা দিতে আপনাকে অবশ্যই মাদরাসা প্রাঙ্গণে (${geofenceResult.threshold} মিটারের মধ্যে) থাকতে হবে। আপনার বর্তমান দূরত্ব: ${geofenceResult.distance} মিটার।`,
+          distance: geofenceResult.distance,
+          threshold: geofenceResult.threshold,
+          accuracy: effectiveAccuracy,
+        });
       }
 
       const { dateStr } = getDhakaTime();
@@ -646,7 +709,7 @@ function staffRoutes(collections, authHelpers, database) {
           ...(user.email
             ? [
                 {
-                  staffEmail: { $regex: new RegExp(`^${user.email}$`, "i") },
+                  staffEmail: { $regex: new RegExp(`^${user.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
                   date: dateStr,
                 },
               ]
@@ -687,14 +750,16 @@ function staffRoutes(collections, authHelpers, database) {
         ""
       ).trim();
 
-      // Enforce early check-out reason comment
-      if (checkOutStatus === "Early" && !checkOutComment) {
+      // Enforce early or overtime check-out reason comment
+      if ((checkOutStatus === "Early" || checkOutStatus === "Overtime") && !checkOutComment) {
         return res.status(400).json({
           success: false,
           requiresComment: true,
-          status: "Early",
+          status: checkOutStatus,
           message:
-            "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক (রাত ১০:০০ এর পূর্বে)।",
+            checkOutStatus === "Early"
+              ? "নির্ধারিত সময়ের পূর্বে প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক (রাত ১০:০০ এর পূর্বে)।"
+              : "রাত ১০:১০ অতিক্রান্ত হওয়ায় বিলম্বিত প্রস্থানের কারণ উল্লেখ করা বাধ্যতামূলক।",
         });
       }
 
@@ -702,10 +767,12 @@ function staffRoutes(collections, authHelpers, database) {
         checkOutTime: now.toISOString(),
         checkOutStatus, // 'On Time' | 'Early' | 'Overtime'
         checkOutComment: checkOutComment || null,
-        checkOutLocation:
-          effectiveLat !== null && effectiveLng !== null
-            ? { lat: effectiveLat, lng: effectiveLng }
-            : null,
+        checkOutLocation: {
+          lat: effectiveLat,
+          lng: effectiveLng,
+          accuracy: effectiveAccuracy,
+          distance: geofenceResult.distance,
+        },
         durationMinutes,
         durationText,
         updatedAt: now,
@@ -918,26 +985,15 @@ function staffRoutes(collections, authHelpers, database) {
   });
 
   /**
-   * 7. Admin: GET /api/admin/staff (list & initial seed)
+   * 7. Admin: GET /api/admin/staff (list from database)
    */
   router.get("/api/admin/staff", async (req, res) => {
     try {
       const search = (req.query.search || "").trim();
 
-      const totalCount = await staffCollection.countDocuments();
-      if (totalCount === 0) {
-        const now = new Date();
-        const docsToInsert = INITIAL_STAFF_MEMBERS.map((s) => ({
-          ...s,
-          createdAt: now,
-          updatedAt: now,
-        }));
-        await staffCollection.insertMany(docsToInsert);
-      }
-
       const query = {};
       if (search) {
-        const searchRegex = new RegExp(search, "i");
+        const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
         query.$or = [
           { fullName: searchRegex },
           { name: searchRegex },
@@ -1278,6 +1334,7 @@ function staffRoutes(collections, authHelpers, database) {
           checkOutStatus: attendance?.checkOutStatus || null,
           checkOutComment: attendance?.checkOutComment || null,
           checkInLocation: attendance?.checkInLocation || null,
+          checkOutLocation: attendance?.checkOutLocation || null,
         };
       });
 
@@ -1365,10 +1422,14 @@ function staffRoutes(collections, authHelpers, database) {
         if (checkInStatus) updateDoc.checkInStatus = checkInStatus;
         if (checkInComment !== undefined)
           updateDoc.checkInComment = checkInComment;
-        if (checkOutStatus !== undefined) {
-          updateDoc.checkOutStatus =
-            checkOutStatus || evaluateStaffCheckOutStatus(now);
-          updateDoc.checkOutTime = now.toISOString();
+        if (checkOutStatus) {
+          updateDoc.checkOutStatus = checkOutStatus;
+          if (!existing.checkOutTime) {
+            updateDoc.checkOutTime = now.toISOString();
+          }
+        } else if (checkOutStatus === "") {
+          updateDoc.checkOutStatus = null;
+          updateDoc.checkOutTime = null;
         }
         if (checkOutComment !== undefined)
           updateDoc.checkOutComment = checkOutComment;
@@ -1378,6 +1439,7 @@ function staffRoutes(collections, authHelpers, database) {
           { $set: updateDoc },
         );
       } else {
+        const hasOutStatus = Boolean(checkOutStatus);
         const newDoc = {
           staffId,
           staffName: body.staffName || "",
@@ -1386,9 +1448,9 @@ function staffRoutes(collections, authHelpers, database) {
           checkInTime: now.toISOString(),
           checkInStatus: checkInStatus || evaluateStaffCheckInStatus(now),
           checkInComment: checkInComment || null,
-          checkOutTime: null,
-          checkOutStatus: null,
-          checkOutComment: null,
+          checkOutTime: hasOutStatus ? now.toISOString() : null,
+          checkOutStatus: hasOutStatus ? checkOutStatus : null,
+          checkOutComment: checkOutComment || null,
           createdAt: now,
           updatedAt: now,
         };

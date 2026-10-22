@@ -4,6 +4,8 @@ const MADRASA_LOCATION = {
   LATITUDE: parseFloat(process.env.MADRASA_LAT || "24.381197"),
   LONGITUDE: parseFloat(process.env.MADRASA_LNG || "91.416974"),
   RADIUS_METERS: parseFloat(process.env.MADRASA_RADIUS || "200"),
+  MAX_ALLOWED_ACCURACY_METERS: 500,
+  ACCURACY_TOLERANCE_METERS: 50,
   NAME: "আস-সালাম আইডিয়াল মাদরাসা (AIM) ক্যাম্পাস",
   ADDRESS: "হবিগঞ্জ সদর, হবিগঞ্জ, বাংলাদেশ",
 };
@@ -78,19 +80,50 @@ function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
 function isWithinMadrasaGeofence(
   userLat,
   userLng,
-  customRadius = MADRASA_LOCATION.RADIUS_METERS
+  customRadius = MADRASA_LOCATION.RADIUS_METERS,
+  accuracy = 0
 ) {
+  const latNum = Number(userLat);
+  const lngNum = Number(userLng);
+
+  if (
+    !Number.isFinite(latNum) ||
+    !Number.isFinite(lngNum) ||
+    latNum < -90 ||
+    latNum > 90 ||
+    lngNum < -180 ||
+    lngNum > 180 ||
+    (latNum === 0 && lngNum === 0)
+  ) {
+    return {
+      isInside: false,
+      isValidCoords: false,
+      distance: Infinity,
+      threshold: customRadius,
+      accuracy: Number(accuracy) || 0,
+      reason: "INVALID_COORDINATES",
+    };
+  }
+
+  const accNum = Number.isFinite(Number(accuracy)) && Number(accuracy) > 0 ? Math.round(Number(accuracy)) : 0;
   const distance = calculateDistanceMeters(
-    Number(userLat),
-    Number(userLng),
+    latNum,
+    lngNum,
     MADRASA_LOCATION.LATITUDE,
     MADRASA_LOCATION.LONGITUDE
   );
 
+  // Allow minor GPS jitter up to ACCURACY_TOLERANCE_METERS (50m) if accuracy is reported
+  const tolerance = Math.min(accNum, MADRASA_LOCATION.ACCURACY_TOLERANCE_METERS || 50);
+  const effectiveThreshold = customRadius + tolerance;
+
   return {
-    isInside: distance <= customRadius,
+    isInside: distance <= effectiveThreshold,
+    isValidCoords: true,
     distance: Math.round(distance),
     threshold: customRadius,
+    effectiveThreshold: Math.round(effectiveThreshold),
+    accuracy: accNum,
   };
 }
 
