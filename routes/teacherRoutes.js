@@ -22,9 +22,12 @@ function teacherRoutes(collections) {
 
   function normalizeDesignation(rawDesignation = "") {
     const d = String(rawDesignation || "").trim();
-    if (d === "residential_teacher") return "আবাসিক শিক্ষক";
-    if (d === "hifz_teacher") return "হিফজ শিক্ষক";
-    if (d === "teacher") return "অনাবাসিক শিক্ষক";
+    const lower = d.toLowerCase();
+    if (lower === "residential_teacher") return "আবাসিক শিক্ষক";
+    if (lower === "hifz_teacher") return "হিফজ শিক্ষক";
+    if (lower === "teacher" || lower === "admin" || lower === "superadmin") {
+      return "অনাবাসিক শিক্ষক";
+    }
     return d || "শিক্ষক";
   }
 
@@ -215,7 +218,12 @@ function teacherRoutes(collections) {
       let teacherUsers = [];
       if (usersCollection) {
         teacherUsers = await usersCollection
-          .find({ role: { $regex: /^teacher$/i } })
+          .find({
+            $or: [
+              { role: { $regex: /^(teacher|residential_teacher|hifz_teacher|admin|superadmin)$/i } },
+              { permissions: "teacher" },
+            ],
+          })
           .sort({ order: 1, priority: 1, createdAt: 1 })
           .toArray()
           .catch(() => []);
@@ -385,7 +393,12 @@ function teacherRoutes(collections) {
     let teacherUsers = [];
     if (usersCollection) {
       teacherUsers = await usersCollection
-        .find({ role: { $regex: /(teacher|residential|hifz)/i } })
+        .find({
+          $or: [
+            { role: { $regex: /(teacher|residential|hifz|admin)/i } },
+            { permissions: "teacher" },
+          ],
+        })
         .sort({ order: 1, priority: 1, createdAt: 1 })
         .toArray()
         .catch(() => []);
@@ -1410,26 +1423,20 @@ function teacherRoutes(collections) {
    */
   router.get("/api/admin/teachers", async (req, res) => {
     try {
-      const search = (req.query.search || "").trim();
+      const search = (req.query.search || "").trim().toLowerCase();
 
-      const query = {};
-      if (search) {
-        const searchRegex = new RegExp(search, "i");
-        query.$or = [
-          { fullName: searchRegex },
-          { name: searchRegex },
-          { designation: searchRegex },
-          { email: searchRegex },
-          { phone: searchRegex },
-          { mobile: searchRegex },
-          { teacherId: searchRegex },
-        ];
-      }
+      const unifiedCatalog = await getUnifiedTeachersCatalog();
 
-      const rawTeachers = await teachersCollection
-        .find(query)
-        .sort({ createdAt: -1 })
-        .toArray();
+      const rawTeachers = search
+        ? unifiedCatalog.filter((t) => {
+            const nameMatch = (t.fullName || t.name || "").toLowerCase().includes(search);
+            const desigMatch = (t.designation || "").toLowerCase().includes(search);
+            const emailMatch = (t.email || "").toLowerCase().includes(search);
+            const phoneMatch = (t.phone || t.mobile || "").toLowerCase().includes(search);
+            const idMatch = (t.teacherId || t.idNo || "").toLowerCase().includes(search);
+            return nameMatch || desigMatch || emailMatch || phoneMatch || idMatch;
+          })
+        : unifiedCatalog;
 
       const teachers = rawTeachers.map((t, index) => {
         const idStr = t._id ? t._id.toString() : `t-${index + 1}`;
@@ -1505,14 +1512,43 @@ function teacherRoutes(collections) {
       delete updateFields.id;
       updateFields.updatedAt = new Date().toISOString();
 
-      const result = await teachersCollection.updateOne(filter, {
+      let result = await teachersCollection.updateOne(filter, {
         $set: updateFields,
       });
+
+      if (result.matchedCount === 0) {
+        let userDoc = null;
+        if (usersCollection && ObjectId.isValid(targetId)) {
+          userDoc = await usersCollection
+            .findOne({ _id: new ObjectId(targetId) })
+            .catch(() => null);
+        }
+        if (userDoc && userDoc.email) {
+          const escapedEmail = String(userDoc.email).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const emailFilter = {
+            email: { $regex: new RegExp("^" + escapedEmail + "$", "i") },
+          };
+          result = await teachersCollection.updateOne(
+            emailFilter,
+            {
+              $set: {
+                email: userDoc.email,
+                fullName: updateFields.fullName || userDoc.name || "",
+                ...updateFields,
+              },
+              $setOnInsert: {
+                createdAt: new Date(),
+              },
+            },
+            { upsert: true }
+          );
+        }
+      }
 
       res.status(200).json({
         success: true,
         message: "শিক্ষকের তথ্য সফলভাবে সংরক্ষণ করা হয়েছে।",
-        modifiedCount: result.modifiedCount,
+        modifiedCount: result.modifiedCount || result.upsertedCount || 1,
       });
     } catch (error) {
       console.error("PATCH /api/admin/teachers error:", error);
