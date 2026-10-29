@@ -4,11 +4,277 @@ const { ObjectId } = require("mongodb");
 function financeRoutes(collections) {
   const router = express.Router();
   const {
+    fundsCollection,
     financeIncomesCollection,
     financeExpensesCollection,
     financeCategoriesCollection,
     studentsCollection,
   } = collections;
+
+  // প্রাথমিক ফান্ড ও প্রারম্ভিক ব্যালেন্স কনফিগারেশন (কার্যকরী তারিখ: ২০২৬-১০-০১)
+  const INITIAL_FUNDS = [
+    {
+      fundKey: "general_fund",
+      name: "As-Salam Ideal Madrasah",
+      nameBn: "জেনারেল ব্যাংক হিসাব-১৫",
+      accountNumber: "19071310000015",
+      openingBalance: 25069.02,
+      openingDate: "2026-10-01",
+      openingMonth: "2026-10",
+      isActive: true,
+      isDefault: true,
+    },
+    {
+      fundKey: "future_fund",
+      name: "As-Salam Ideal Madrasah(Future Fund)",
+      nameBn: "ফিউচার ফান্ড ব্যাংক হিসাব-৬৭৩",
+      accountNumber: "19071213000673",
+      openingBalance: 38220.52,
+      openingDate: "2026-10-01",
+      openingMonth: "2026-10",
+      isActive: true,
+      isDefault: false,
+    },
+    {
+      fundKey: "donation_fund",
+      name: "As-Salam Ideal Madrasah(Donation Fund)",
+      nameBn: "ডোনেশন ফান্ড ব্যাংক হিসাব-৬৭৪",
+      accountNumber: "19071210000674",
+      openingBalance: 202892.51,
+      openingDate: "2026-10-01",
+      openingMonth: "2026-10",
+      isActive: true,
+      isDefault: false,
+    },
+    {
+      fundKey: "zakath_fund",
+      name: "As-Salam Ideal Madrasah(Zakath Fund)",
+      nameBn: "যাকাত ফান্ড ব্যাংক হিসাব-৬৭৫",
+      accountNumber: "19071210000675",
+      openingBalance: 9371.1,
+      openingDate: "2026-10-01",
+      openingMonth: "2026-10",
+      isActive: true,
+      isDefault: false,
+    },
+    {
+      fundKey: "yeatim_fund",
+      name: "As-Salam Ideal Madrasah(Yeatim Fund)",
+      nameBn: "এয়াতিম ফান্ড ব্যাংক হিসাব-৮০৪",
+      accountNumber: "19071210000804",
+      openingBalance: 169479.47,
+      openingDate: "2026-10-01",
+      openingMonth: "2026-10",
+      isActive: true,
+      isDefault: false,
+    },
+  ];
+
+  const DEFAULT_ACCOUNT_NUMBER = "19071310000015";
+
+  // ২ দশমিক স্থান পর্যন্ত নির্ভুলভাবে রাউন্ডিং হেল্পার (IEEE-754 ফ্লোটিং পয়েন্ট ত্রুটি রোধে)
+  const round2 = (val) =>
+    Math.round(((Number(val) || 0) + Number.EPSILON) * 100) / 100;
+
+  // খাত বা অ্যাকাউন্ট নম্বর থেকে ফান্ড অ্যাট্রিবিউশন নির্ধারণ হেল্পার
+  const resolveFundAttribution = (explicitAccountNumber, items = []) => {
+    const cleanAcc = explicitAccountNumber
+      ? String(explicitAccountNumber).trim()
+      : "";
+    if (cleanAcc) {
+      const matched = INITIAL_FUNDS.find((f) => f.accountNumber === cleanAcc);
+      if (matched) {
+        return {
+          accountNumber: matched.accountNumber,
+          fundKey: matched.fundKey,
+          fundName: matched.name,
+          fundNameBn: matched.nameBn,
+        };
+      }
+    }
+
+    // খাতের নাম (head) থেকে স্বয়ংক্রিয় ফান্ড ডিটেকশন (যদি explicitAccountNumber না থাকে)
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        const head = String(item?.head || "");
+        if (
+          head.includes("৮০৪") ||
+          head.includes("804") ||
+          head.includes("এয়াতিম") ||
+          head.includes("ইয়াতিম") ||
+          head.includes("অরফান")
+        ) {
+          const f = INITIAL_FUNDS.find(
+            (x) => x.accountNumber === "19071210000804",
+          );
+          return {
+            accountNumber: f.accountNumber,
+            fundKey: f.fundKey,
+            fundName: f.name,
+            fundNameBn: f.nameBn,
+          };
+        }
+        if (
+          head.includes("৬৭৫") ||
+          head.includes("675") ||
+          head.includes("যাকাত")
+        ) {
+          const f = INITIAL_FUNDS.find(
+            (x) => x.accountNumber === "19071210000675",
+          );
+          return {
+            accountNumber: f.accountNumber,
+            fundKey: f.fundKey,
+            fundName: f.name,
+            fundNameBn: f.nameBn,
+          };
+        }
+        if (
+          head.includes("৬৭৪") ||
+          head.includes("674") ||
+          head.includes("ডোনেশন") ||
+          head.includes("সাদাকাহ")
+        ) {
+          const f = INITIAL_FUNDS.find(
+            (x) => x.accountNumber === "19071210000674",
+          );
+          return {
+            accountNumber: f.accountNumber,
+            fundKey: f.fundKey,
+            fundName: f.name,
+            fundNameBn: f.nameBn,
+          };
+        }
+        if (
+          head.includes("৬৭৩") ||
+          head.includes("673") ||
+          head.includes("ফিউচার")
+        ) {
+          const f = INITIAL_FUNDS.find(
+            (x) => x.accountNumber === "19071213000673",
+          );
+          return {
+            accountNumber: f.accountNumber,
+            fundKey: f.fundKey,
+            fundName: f.name,
+            fundNameBn: f.nameBn,
+          };
+        }
+      }
+    }
+
+    const defaultFund = INITIAL_FUNDS[0];
+    return {
+      accountNumber: defaultFund.accountNumber,
+      fundKey: defaultFund.fundKey,
+      fundName: defaultFund.name,
+      fundNameBn: defaultFund.nameBn,
+    };
+  };
+
+  // ফান্ড সিডিং, ইনডেক্সিং এবং পুরাতন লেনদেনের ফান্ড ব্যাকফিল হেল্পার (Idempotent)
+  const initializeFinanceFundsAndIndexes = async () => {
+    if (!fundsCollection) return [];
+    try {
+      await Promise.all([
+        fundsCollection.createIndex({ accountNumber: 1 }, { unique: true }),
+        financeIncomesCollection.createIndex({
+          month: 1,
+          accountNumber: 1,
+          status: 1,
+        }),
+        financeExpensesCollection.createIndex({
+          month: 1,
+          accountNumber: 1,
+          status: 1,
+        }),
+      ]);
+
+      const now = new Date();
+      for (const fund of INITIAL_FUNDS) {
+        await fundsCollection.updateOne(
+          { accountNumber: fund.accountNumber },
+          {
+            $setOnInsert: {
+              ...fund,
+              createdAt: now,
+            },
+          },
+          { upsert: true },
+        );
+      }
+
+      // পুরাতন লেনদেনগুলোতে accountNumber না থাকলে স্বয়ংক্রিয়ভাবে ব্যাকফিল করা
+      const [legacyIncomes, legacyExpenses] = await Promise.all([
+        financeIncomesCollection
+          .find({
+            $or: [
+              { accountNumber: { $exists: false } },
+              { accountNumber: null },
+              { accountNumber: "" },
+            ],
+          })
+          .toArray(),
+        financeExpensesCollection
+          .find({
+            $or: [
+              { accountNumber: { $exists: false } },
+              { accountNumber: null },
+              { accountNumber: "" },
+            ],
+          })
+          .toArray(),
+      ]);
+
+      for (const inc of legacyIncomes) {
+        const resolved = resolveFundAttribution(null, inc.items);
+        await financeIncomesCollection.updateOne(
+          { _id: inc._id },
+          { $set: resolved },
+        );
+      }
+
+      for (const exp of legacyExpenses) {
+        const resolved = resolveFundAttribution(null, exp.items);
+        await financeExpensesCollection.updateOne(
+          { _id: exp._id },
+          { $set: resolved },
+        );
+      }
+
+      return await fundsCollection
+        .find({})
+        .sort({ isDefault: -1, accountNumber: 1 })
+        .toArray();
+    } catch (err) {
+      console.error("Finance funds initialization error:", err);
+      return [];
+    }
+  };
+
+  // সার্ভার স্টার্টআপে স্বয়ংক্রিয়ভাবে ফান্ড ও ইনডেক্স নিশ্চিত করা
+  initializeFinanceFundsAndIndexes();
+
+  /**
+   * ০.১. প্রাথমিক ফান্ড ও প্রারম্ভিক ব্যালেন্স সিড করার API (Idempotent)
+   * Endpoint: POST /api/finance/funds/seed
+   */
+  router.post("/api/finance/funds/seed", async (req, res) => {
+    try {
+      const funds = await initializeFinanceFundsAndIndexes();
+      res.status(200).json({
+        success: true,
+        message: "প্রাথমিক ফান্ড এবং প্রারম্ভিক ব্যালেন্স সফলভাবে সিঙ্ক করা হয়েছে!",
+        data: funds,
+      });
+    } catch (error) {
+      console.error("Error seeding finance funds:", error);
+      res.status(500).json({
+        success: false,
+        message: "ফান্ড সিড করতে সমস্যা হয়েছে।",
+      });
+    }
+  });
 
   // ডাইনামিক রসিদ ও ভাউচার আইডি জেনারেশন হেল্পার (EXP-MMYY<Serial> ও INC-MMYY<Serial>)
   const getNextFinanceId = async (type = "income", dateStr) => {
@@ -113,6 +379,7 @@ function financeRoutes(collections) {
     try {
       const {
         receiptNo,
+        accountNumber,
         payerName,
         payerType,
         donorName,
@@ -134,13 +401,12 @@ function financeRoutes(collections) {
         });
       }
 
-      // মোট আয় হিসাব
-      const itemsTotal = items.reduce(
-        (sum, item) => sum + (parseFloat(item.amount) || 0),
-        0,
+      // মোট আয় হিসাব (২ দশমিক স্থান পর্যন্ত রাউন্ডিং)
+      const itemsTotal = round2(
+        items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
       );
-      const parsedDiscount = parseFloat(discount) || 0;
-      const totalIncome = itemsTotal - parsedDiscount;
+      const parsedDiscount = round2(parseFloat(discount) || 0);
+      const totalIncome = round2(itemsTotal - parsedDiscount);
       let finalReceiptNo = receiptNo ? String(receiptNo).trim() : "";
       if (
         !finalReceiptNo ||
@@ -151,8 +417,11 @@ function financeRoutes(collections) {
         finalReceiptNo = await getNextFinanceId("income", date);
       }
 
+      const fundAttribution = resolveFundAttribution(accountNumber, items);
+
       const newIncome = {
         receiptNo: finalReceiptNo,
+        ...fundAttribution,
         payerName: payerName || "N/A",
         payerType: payerType || "donor",
         donorName: donorName || "",
@@ -164,7 +433,8 @@ function financeRoutes(collections) {
         month, // format: YYYY-MM
         items: items.map((item) => ({
           head: item.head,
-          amount: parseFloat(item.amount) || 0,
+          amount: round2(parseFloat(item.amount) || 0),
+          accountNumber: item.accountNumber || fundAttribution.accountNumber,
         })),
         totalIncome,
         paymentMethod: paymentMethod || "Cash",
@@ -197,6 +467,7 @@ function financeRoutes(collections) {
     try {
       const {
         voucherNo,
+        accountNumber,
         receiverName,
         advanceAmount,
         chequeNo,
@@ -214,12 +485,11 @@ function financeRoutes(collections) {
         });
       }
 
-      const totalExpense = items.reduce(
-        (sum, item) => sum + (parseFloat(item.amount) || 0),
-        0,
+      const totalExpense = round2(
+        items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
       );
-      const parsedAdvance = parseFloat(advanceAmount) || 0;
-      const balance = parsedAdvance - totalExpense;
+      const parsedAdvance = round2(parseFloat(advanceAmount) || 0);
+      const balance = round2(parsedAdvance - totalExpense);
       let finalVoucherNo = voucherNo ? String(voucherNo).trim() : "";
       if (
         !finalVoucherNo ||
@@ -230,8 +500,11 @@ function financeRoutes(collections) {
         finalVoucherNo = await getNextFinanceId("expense", date);
       }
 
+      const fundAttribution = resolveFundAttribution(accountNumber, items);
+
       const newExpense = {
         voucherNo: finalVoucherNo,
+        ...fundAttribution,
         receiverName: receiverName || "N/A",
         advanceAmount: parsedAdvance,
         chequeNo: chequeNo || "",
@@ -239,7 +512,8 @@ function financeRoutes(collections) {
         month, // format: YYYY-MM
         items: items.map((item) => ({
           head: item.head,
-          amount: parseFloat(item.amount) || 0,
+          amount: round2(parseFloat(item.amount) || 0),
+          accountNumber: item.accountNumber || fundAttribution.accountNumber,
           institutionName: item.institutionName || "",
           shopName: item.shopName || "",
           shopVoucher: item.shopVoucher || "",
@@ -269,191 +543,498 @@ function financeRoutes(collections) {
   });
 
   /**
-   * ৩. মাসিক আয়ের ও ব্যয়ের সারসংক্ষেপ এবং খাত-ভিত্তিক হিসাব
+   * ০.২. সকল ফান্ড ও তাদের বর্তমান ব্যালেন্সের তালিকা পাওয়ার API
+   * Endpoint: GET /api/finance/funds
+   */
+  router.get("/api/finance/funds", async (req, res) => {
+    try {
+      let funds = await fundsCollection
+        .find({})
+        .sort({ isDefault: -1, accountNumber: 1 })
+        .toArray();
+
+      if (!funds || funds.length === 0) {
+        funds = await initializeFinanceFundsAndIndexes();
+      }
+
+      const [incomeByFundAgg, expenseByFundAgg] = await Promise.all([
+        financeIncomesCollection
+          .aggregate([
+            {
+              $match: {
+                status: { $ne: "pending" },
+                month: { $gte: "2026-10" },
+              },
+            },
+            {
+              $group: {
+                _id: { $ifNull: ["$accountNumber", DEFAULT_ACCOUNT_NUMBER] },
+                total: { $sum: "$totalIncome" },
+              },
+            },
+          ])
+          .toArray(),
+        financeExpensesCollection
+          .aggregate([
+            {
+              $match: {
+                status: { $ne: "pending" },
+                month: { $gte: "2026-10" },
+              },
+            },
+            {
+              $group: {
+                _id: { $ifNull: ["$accountNumber", DEFAULT_ACCOUNT_NUMBER] },
+                total: { $sum: "$totalExpense" },
+              },
+            },
+          ])
+          .toArray(),
+      ]);
+
+      const incomeMap = {};
+      incomeByFundAgg.forEach((row) => {
+        incomeMap[row._id] = round2(row.total);
+      });
+
+      const expenseMap = {};
+      expenseByFundAgg.forEach((row) => {
+        expenseMap[row._id] = round2(row.total);
+      });
+
+      const enrichedFunds = funds.map((f) => {
+        const initOpening = round2(f.openingBalance);
+        const inc = incomeMap[f.accountNumber] || 0;
+        const exp = expenseMap[f.accountNumber] || 0;
+        const availableBalance = round2(initOpening + inc);
+        const currentBalance = round2(availableBalance - exp);
+        return {
+          ...f,
+          openingBalance: initOpening,
+          totalIncome: inc,
+          availableBalance,
+          totalExpense: exp,
+          currentBalance,
+        };
+      });
+
+      res.status(200).json({
+        success: true,
+        data: enrichedFunds,
+      });
+    } catch (error) {
+      console.error("Error fetching finance funds:", error);
+      res.status(500).json({
+        success: false,
+        message: "সার্ভার থেকে ফান্ডের তালিকা আনতে সমস্যা হয়েছে।",
+      });
+    }
+  });
+
+  /**
+   * ০.৩. ফান্ডের প্রারম্ভিক ব্যালেন্স বা তথ্য আপডেট করার API
+   * Endpoint: PUT /api/finance/funds/:accountNumber
+   */
+  router.put("/api/finance/funds/:accountNumber", async (req, res) => {
+    try {
+      const { accountNumber } = req.params;
+      const { openingBalance, openingDate, openingMonth, name, nameBn, isActive } =
+        req.body;
+
+      const updateFields = { updatedAt: new Date() };
+      if (openingBalance !== undefined) {
+        updateFields.openingBalance = round2(parseFloat(openingBalance) || 0);
+      }
+      if (openingDate) updateFields.openingDate = String(openingDate).trim();
+      if (openingMonth) updateFields.openingMonth = String(openingMonth).trim();
+      if (name) updateFields.name = String(name).trim();
+      if (nameBn) updateFields.nameBn = String(nameBn).trim();
+      if (typeof isActive === "boolean") updateFields.isActive = isActive;
+
+      const result = await fundsCollection.updateOne(
+        { accountNumber: String(accountNumber).trim() },
+        { $set: updateFields },
+      );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "নির্দিষ্ট ব্যাংক হিসাব / ফান্ডটি পাওয়া যায়নি।",
+        });
+      }
+
+      const updatedFund = await fundsCollection.findOne({
+        accountNumber: String(accountNumber).trim(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "ফান্ডের তথ্য সফলভাবে আপডেট করা হয়েছে!",
+        data: updatedFund,
+      });
+    } catch (error) {
+      console.error("Error updating fund:", error);
+      res.status(500).json({
+        success: false,
+        message: "ফান্ডের তথ্য আপডেট করতে সমস্যা হয়েছে।",
+      });
+    }
+  });
+
+  /**
+   * ৩. মাসিক আয়ের ও ব্যয়ের সারসংক্ষেপ, রোলিং ব্যালেন্স এবং ফান্ড-ভিত্তিক হিসাব
    * Endpoint: GET /api/finance/summary
    */
   router.get("/api/finance/summary", async (req, res) => {
     try {
-      const { month, year } = req.query;
+      const { month, year, accountNumber } = req.query;
+      const selectedAcc =
+        accountNumber && accountNumber !== "all"
+          ? String(accountNumber).trim()
+          : "all";
 
-      // Build filter for period
+      // ১. সকল ফান্ড লোড করা
+      let allFunds = await fundsCollection
+        .find({})
+        .sort({ isDefault: -1, accountNumber: 1 })
+        .toArray();
+      if (!allFunds || allFunds.length === 0) {
+        allFunds = await initializeFinanceFundsAndIndexes();
+      }
+
+      const targetFunds =
+        selectedAcc !== "all"
+          ? allFunds.filter((f) => f.accountNumber === selectedAcc)
+          : allFunds;
+
+      // ২. পিরিয়ড এবং মাস/বছর ফিল্টার নির্ধারণ
       const periodIncomeFilter = { status: { $ne: "pending" } };
       const periodExpenseFilter = { status: { $ne: "pending" } };
 
-      let targetMonthLabel = "all";
+      if (selectedAcc !== "all") {
+        periodIncomeFilter.accountNumber = selectedAcc;
+        periodExpenseFilter.accountNumber = selectedAcc;
+      }
 
-      if (year && year !== "all") {
+      let targetMonthLabel = "all";
+      const resolvedYear =
+        year && year !== "all"
+          ? String(year).trim()
+          : month && month !== "all"
+            ? String(new Date().getFullYear())
+            : "all";
+
+      if (resolvedYear !== "all") {
         if (month && month !== "all") {
           const formattedMonth = String(month).padStart(2, "0");
-          targetMonthLabel = `${year}-${formattedMonth}`;
+          targetMonthLabel = `${resolvedYear}-${formattedMonth}`;
           periodIncomeFilter.month = targetMonthLabel;
           periodExpenseFilter.month = targetMonthLabel;
         } else {
-          targetMonthLabel = `${year}`;
-          periodIncomeFilter.month = { $regex: `^${year}-` };
-          periodExpenseFilter.month = { $regex: `^${year}-` };
+          targetMonthLabel = `${resolvedYear}`;
+          periodIncomeFilter.month = { $regex: `^${resolvedYear}-` };
+          periodExpenseFilter.month = { $regex: `^${resolvedYear}-` };
         }
-      } else if (month && month !== "all") {
-        const formattedMonth = String(month).padStart(2, "0");
-        targetMonthLabel = formattedMonth;
-        periodIncomeFilter.month = { $regex: `-${formattedMonth}$` };
-        periodExpenseFilter.month = { $regex: `-${formattedMonth}$` };
       }
 
-      // মোট আয় হিসাব (Period)
-      const incomeAggregation = await financeIncomesCollection
-        .aggregate([
-          { $match: periodIncomeFilter },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: "$totalIncome" },
-            },
-          },
-        ])
-        .toArray();
-
-      // মোট ব্যয় হিসাব (Period)
-      const expenseAggregation = await financeExpensesCollection
-        .aggregate([
-          { $match: periodExpenseFilter },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: "$totalExpense" },
-            },
-          },
-        ])
-        .toArray();
-
-      const totalIncome = incomeAggregation[0]?.total || 0;
-      const totalExpense = expenseAggregation[0]?.total || 0;
-
-      // প্রারম্ভিক ব্যালেন্স (Opening Balance): পূর্ববর্তী মাসগুলোর নিট উদ্বৃত্ত
-      let openingBalance = 0;
-      if (targetMonthLabel && /^\d{4}-\d{2}$/.test(targetMonthLabel)) {
-        const priorIncomeAgg = await financeIncomesCollection
+      // ৩. পিরিয়ড অনুযায়ী ফান্ড-ভিত্তিক আয় ও ব্যয় এগ্রিগেশন
+      const [periodIncomeByFund, periodExpenseByFund] = await Promise.all([
+        financeIncomesCollection
           .aggregate([
+            { $match: periodIncomeFilter },
             {
-              $match: {
-                month: { $lt: targetMonthLabel },
-                status: { $ne: "pending" },
+              $group: {
+                _id: { $ifNull: ["$accountNumber", DEFAULT_ACCOUNT_NUMBER] },
+                total: { $sum: "$totalIncome" },
               },
             },
-            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
           ])
-          .toArray();
-
-        const priorExpenseAgg = await financeExpensesCollection
+          .toArray(),
+        financeExpensesCollection
           .aggregate([
+            { $match: periodExpenseFilter },
             {
-              $match: {
-                month: { $lt: targetMonthLabel },
-                status: { $ne: "pending" },
+              $group: {
+                _id: { $ifNull: ["$accountNumber", DEFAULT_ACCOUNT_NUMBER] },
+                total: { $sum: "$totalExpense" },
               },
             },
-            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
           ])
-          .toArray();
+          .toArray(),
+      ]);
 
-        const priorIncome = priorIncomeAgg[0]?.total || 0;
-        const priorExpense = priorExpenseAgg[0]?.total || 0;
-        openingBalance = priorIncome - priorExpense;
-      } else if (year && year !== "all" && (!month || month === "all")) {
-        const priorIncomeAgg = await financeIncomesCollection
-          .aggregate([
-            {
-              $match: {
-                month: { $lt: `${year}-01` },
-                status: { $ne: "pending" },
-              },
-            },
-            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
-          ])
-          .toArray();
+      const periodIncMap = {};
+      periodIncomeByFund.forEach((r) => {
+        periodIncMap[r._id] = round2(r.total);
+      });
+      const periodExpMap = {};
+      periodExpenseByFund.forEach((r) => {
+        periodExpMap[r._id] = round2(r.total);
+      });
 
-        const priorExpenseAgg = await financeExpensesCollection
-          .aggregate([
-            {
-              $match: {
-                month: { $lt: `${year}-01` },
-                status: { $ne: "pending" },
-              },
-            },
-            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
-          ])
-          .toArray();
+      // ৪. রোলিং ওপেনিং ব্যালেন্স ক্যালকুলেশন (প্রতিটি ফান্ডের নিজস্ব openingMonth অ্যাঙ্কর থেকে)
+      const isSpecificMonth = /^\d{4}-\d{2}$/.test(targetMonthLabel);
+      const isSpecificYear = /^\d{4}$/.test(targetMonthLabel);
 
-        const priorIncome = priorIncomeAgg[0]?.total || 0;
-        const priorExpense = priorExpenseAgg[0]?.total || 0;
-        openingBalance = priorIncome - priorExpense;
+      const fundBreakdown = [];
+
+      for (const fund of targetFunds) {
+        const accNo = fund.accountNumber;
+        const anchorMonth = fund.openingMonth || "2026-10";
+        const initialSeed = round2(fund.openingBalance);
+
+        let fundOpening = 0;
+
+        if (isSpecificMonth) {
+          if (targetMonthLabel >= anchorMonth) {
+            // অ্যাঙ্কর মাস (যেমন 2026-10) বা তার পরবর্তী মাসগুলোর জন্য:
+            // Opening(M) = InitialOpening(2026-10) + NetTransactions([2026-10, M))
+            let priorInc = 0;
+            let priorExp = 0;
+            if (targetMonthLabel > anchorMonth) {
+              const [pIncAgg, pExpAgg] = await Promise.all([
+                financeIncomesCollection
+                  .aggregate([
+                    {
+                      $match: {
+                        accountNumber: accNo,
+                        status: { $ne: "pending" },
+                        month: { $gte: anchorMonth, $lt: targetMonthLabel },
+                      },
+                    },
+                    { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+                  ])
+                  .toArray(),
+                financeExpensesCollection
+                  .aggregate([
+                    {
+                      $match: {
+                        accountNumber: accNo,
+                        status: { $ne: "pending" },
+                        month: { $gte: anchorMonth, $lt: targetMonthLabel },
+                      },
+                    },
+                    { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+                  ])
+                  .toArray(),
+              ]);
+              priorInc = round2(pIncAgg[0]?.total || 0);
+              priorExp = round2(pExpAgg[0]?.total || 0);
+            }
+            fundOpening = round2(initialSeed + priorInc - priorExp);
+          } else {
+            // অ্যাঙ্কর মাসের পূর্ববর্তী মাসের (যেমন < 2026-10) জন্য শুধুমাত্র পূর্ববর্তী লেনদেনগুলোর সমষ্টি
+            const [pIncAgg, pExpAgg] = await Promise.all([
+              financeIncomesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $lt: targetMonthLabel },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+                ])
+                .toArray(),
+              financeExpensesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $lt: targetMonthLabel },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+                ])
+                .toArray(),
+            ]);
+            fundOpening = round2(
+              (pIncAgg[0]?.total || 0) - (pExpAgg[0]?.total || 0),
+            );
+          }
+        } else if (isSpecificYear) {
+          const yearStart = `${targetMonthLabel}-01`;
+          const yearEnd = `${targetMonthLabel}-12`;
+          if (yearStart > anchorMonth) {
+            const [pIncAgg, pExpAgg] = await Promise.all([
+              financeIncomesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $gte: anchorMonth, $lt: yearStart },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+                ])
+                .toArray(),
+              financeExpensesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $gte: anchorMonth, $lt: yearStart },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+                ])
+                .toArray(),
+            ]);
+            fundOpening = round2(
+              initialSeed +
+                (pIncAgg[0]?.total || 0) -
+                (pExpAgg[0]?.total || 0),
+            );
+          } else if (yearEnd >= anchorMonth) {
+            fundOpening = initialSeed;
+          } else {
+            const [pIncAgg, pExpAgg] = await Promise.all([
+              financeIncomesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $lt: yearStart },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+                ])
+                .toArray(),
+              financeExpensesCollection
+                .aggregate([
+                  {
+                    $match: {
+                      accountNumber: accNo,
+                      status: { $ne: "pending" },
+                      month: { $lt: yearStart },
+                    },
+                  },
+                  { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+                ])
+                .toArray(),
+            ]);
+            fundOpening = round2(
+              (pIncAgg[0]?.total || 0) - (pExpAgg[0]?.total || 0),
+            );
+          }
+        } else {
+          // "all" পিরিয়ডের ক্ষেত্রে ফান্ডের প্রারম্ভিক ব্যালেন্স
+          fundOpening = initialSeed;
+        }
+
+        const fIncome = periodIncMap[accNo] || 0;
+        const fExpense = periodExpMap[accNo] || 0;
+        // Core Business Formula:
+        // Available Balance = Opening Balance + Total Incomes
+        // Closing Balance = Available Balance - Total Expenses
+        const fAvailable = round2(fundOpening + fIncome);
+        const fClosing = round2(fAvailable - fExpense);
+
+        fundBreakdown.push({
+          accountNumber: accNo,
+          fundKey: fund.fundKey,
+          name: fund.name,
+          nameBn: fund.nameBn,
+          initialOpeningBalance: initialSeed,
+          openingDate: fund.openingDate || "2026-10-01",
+          openingMonth: anchorMonth,
+          openingBalance: fundOpening,
+          totalIncome: fIncome,
+          availableBalance: fAvailable,
+          totalExpense: fExpense,
+          closingBalance: fClosing,
+        });
       }
 
-      // ব্যয়যোগ্য মোট তহবিল = প্রারম্ভিক ব্যালেন্স + চলতি মাসের মোট আয়
-      const totalUsableFund = openingBalance + totalIncome;
-      // চলতি সমাপনী উদ্বৃত্ত / নিট ব্যালেন্স = ব্যয়যোগ্য মোট তহবিল - চলতি ব্যয়
-      const netBalance = totalUsableFund - totalExpense;
-
-      // সার্বিক (Overall all-time) মোট আয় ও ব্যয় হিসাব
-      const overallIncomeAgg = await financeIncomesCollection
-        .aggregate([
-          { $match: { status: { $ne: "pending" } } },
-          { $group: { _id: null, total: { $sum: "$totalIncome" } } },
-        ])
-        .toArray();
-
-      const overallExpenseAgg = await financeExpensesCollection
-        .aggregate([
-          { $match: { status: { $ne: "pending" } } },
-          { $group: { _id: null, total: { $sum: "$totalExpense" } } },
-        ])
-        .toArray();
-
-      const overallIncome = overallIncomeAgg[0]?.total || 0;
-      const overallExpense = overallExpenseAgg[0]?.total || 0;
-      const overallBalance = overallIncome - overallExpense;
-
-      // খাত-ভিত্তিক আয়ের হিসাব
-      const incomeCategoryBreakdown = await financeIncomesCollection
-        .aggregate([
-          { $match: periodIncomeFilter },
-          { $unwind: "$items" },
-          {
-            $group: {
-              _id: "$items.head",
-              total: { $sum: "$items.amount" },
-            },
-          },
-          { $sort: { total: -1 } },
-        ])
-        .toArray();
-
-      // খাত-ভিত্তিক ব্যয়ের হিসাব
-      const expenseCategoryBreakdown = await financeExpensesCollection
-        .aggregate([
-          { $match: periodExpenseFilter },
-          { $unwind: "$items" },
-          {
-            $group: {
-              _id: "$items.head",
-              total: { $sum: "$items.amount" },
-            },
-          },
-          { $sort: { total: -1 } },
-        ])
-        .toArray();
-
-      // সক্রিয় মাসসমূহ (Active months list)
-      const activeIncomeMonths = await financeIncomesCollection.distinct(
-        "month",
-        { status: { $ne: "pending" } },
+      // ৫. সামগ্রিক (Consolidated) পিরিয়ড ব্যালেন্স হিসাব
+      const openingBalance = round2(
+        fundBreakdown.reduce((sum, f) => sum + f.openingBalance, 0),
       );
-      const activeExpenseMonths = await financeExpensesCollection.distinct(
-        "month",
-        { status: { $ne: "pending" } },
+      const totalIncome = round2(
+        fundBreakdown.reduce((sum, f) => sum + f.totalIncome, 0),
       );
+      const totalUsableFund = round2(openingBalance + totalIncome);
+      const totalExpense = round2(
+        fundBreakdown.reduce((sum, f) => sum + f.totalExpense, 0),
+      );
+      const netBalance = round2(totalUsableFund - totalExpense);
+
+      // ৬. সার্বিক (Overall all-time) মোট প্রারম্ভিক, আয়, ব্যয় ও বর্তমান উদ্বৃত্ত হিসাব
+      const overallMatch = { status: { $ne: "pending" } };
+      if (selectedAcc !== "all") {
+        overallMatch.accountNumber = selectedAcc;
+      }
+
+      const [overallIncomeAgg, overallExpenseAgg] = await Promise.all([
+        financeIncomesCollection
+          .aggregate([
+            { $match: overallMatch },
+            { $group: { _id: null, total: { $sum: "$totalIncome" } } },
+          ])
+          .toArray(),
+        financeExpensesCollection
+          .aggregate([
+            { $match: overallMatch },
+            { $group: { _id: null, total: { $sum: "$totalExpense" } } },
+          ])
+          .toArray(),
+      ]);
+
+      const overallOpeningBalance = round2(
+        targetFunds.reduce((sum, f) => sum + (f.openingBalance || 0), 0),
+      );
+      const overallIncome = round2(overallIncomeAgg[0]?.total || 0);
+      const overallExpense = round2(overallExpenseAgg[0]?.total || 0);
+      const overallUsableFund = round2(overallOpeningBalance + overallIncome);
+      const overallBalance = round2(overallUsableFund - overallExpense);
+
+      // ৭. খাত-ভিত্তিক আয়ের ও ব্যয়ের হিসাব
+      const [incomeCategoryBreakdown, expenseCategoryBreakdown] =
+        await Promise.all([
+          financeIncomesCollection
+            .aggregate([
+              { $match: periodIncomeFilter },
+              { $unwind: "$items" },
+              {
+                $group: {
+                  _id: "$items.head",
+                  total: { $sum: "$items.amount" },
+                },
+              },
+              { $sort: { total: -1 } },
+            ])
+            .toArray(),
+          financeExpensesCollection
+            .aggregate([
+              { $match: periodExpenseFilter },
+              { $unwind: "$items" },
+              {
+                $group: {
+                  _id: "$items.head",
+                  total: { $sum: "$items.amount" },
+                },
+              },
+              { $sort: { total: -1 } },
+            ])
+            .toArray(),
+        ]);
+
+      // ৮. সক্রিয় মাসসমূহ (Active months list, 2026-10 সহ)
+      const [activeIncomeMonths, activeExpenseMonths] = await Promise.all([
+        financeIncomesCollection.distinct("month", {
+          status: { $ne: "pending" },
+        }),
+        financeExpensesCollection.distinct("month", {
+          status: { $ne: "pending" },
+        }),
+      ]);
       const activeMonths = Array.from(
-        new Set([...activeIncomeMonths, ...activeExpenseMonths]),
+        new Set(["2026-10", ...activeIncomeMonths, ...activeExpenseMonths]),
       )
         .filter(Boolean)
         .sort()
@@ -463,22 +1044,29 @@ function financeRoutes(collections) {
         success: true,
         data: {
           month: targetMonthLabel,
+          accountNumber: selectedAcc,
           openingBalance,
           totalIncome,
           totalUsableFund,
+          availableBalance: totalUsableFund,
           totalExpense,
           netBalance,
+          closingBalance: netBalance,
+          overallOpeningBalance,
           overallIncome,
+          overallUsableFund,
           overallExpense,
           overallBalance,
           activeMonths,
+          funds: allFunds,
+          fundBreakdown,
           incomeBreakdown: incomeCategoryBreakdown.map((item) => ({
             head: item._id,
-            amount: item.total,
+            amount: round2(item.total),
           })),
           expenseBreakdown: expenseCategoryBreakdown.map((item) => ({
             head: item._id,
-            amount: item.total,
+            amount: round2(item.total),
           })),
         },
       });
@@ -504,6 +1092,7 @@ function financeRoutes(collections) {
       const startDate = req.query.startDate;
       const endDate = req.query.endDate;
       const status = req.query.status;
+      const accountNumber = req.query.accountNumber;
 
       const skip = (page - 1) * limit;
 
@@ -516,6 +1105,10 @@ function financeRoutes(collections) {
           filter.status = { $ne: "pending" };
         }
 
+        if (accountNumber && accountNumber !== "all") {
+          filter.accountNumber = String(accountNumber).trim();
+        }
+
         if (search) {
           const regex = { $regex: search, $options: "i" };
           if (isIncome) {
@@ -524,6 +1117,9 @@ function financeRoutes(collections) {
               { payerName: regex },
               { description: regex },
               { "items.head": regex },
+              { accountNumber: regex },
+              { fundName: regex },
+              { fundNameBn: regex },
             ];
           } else {
             filter.$or = [
@@ -532,6 +1128,9 @@ function financeRoutes(collections) {
               { chequeNo: regex },
               { description: regex },
               { "items.head": regex },
+              { accountNumber: regex },
+              { fundName: regex },
+              { fundNameBn: regex },
             ];
           }
         }
@@ -543,6 +1142,14 @@ function financeRoutes(collections) {
         }
 
         return filter;
+      };
+
+      const attachFallbackFundInfo = (tx, txType) => {
+        if (tx.accountNumber && tx.fundName) {
+          return { ...tx, type: txType };
+        }
+        const resolved = resolveFundAttribution(tx.accountNumber, tx.items);
+        return { ...tx, ...resolved, type: txType };
       };
 
       let transactions = [];
@@ -557,7 +1164,9 @@ function financeRoutes(collections) {
           .skip(skip)
           .limit(limit)
           .toArray();
-        transactions = list.map((item) => ({ ...item, type: "income" }));
+        transactions = list.map((item) =>
+          attachFallbackFundInfo(item, "income"),
+        );
       } else if (type === "expense") {
         const filter = buildFilter(false);
         totalCount = await financeExpensesCollection.countDocuments(filter);
@@ -567,7 +1176,9 @@ function financeRoutes(collections) {
           .skip(skip)
           .limit(limit)
           .toArray();
-        transactions = list.map((item) => ({ ...item, type: "expense" }));
+        transactions = list.map((item) =>
+          attachFallbackFundInfo(item, "expense"),
+        );
       } else {
         const filterIncome = buildFilter(true);
         const filterExpense = buildFilter(false);
@@ -596,7 +1207,10 @@ function financeRoutes(collections) {
         const result = await financeIncomesCollection
           .aggregate(facetPipeline)
           .toArray();
-        transactions = result[0]?.data || [];
+        const rawList = result[0]?.data || [];
+        transactions = rawList.map((item) =>
+          attachFallbackFundInfo(item, item.type),
+        );
         totalCount = result[0]?.metadata[0]?.total || 0;
       }
 
@@ -724,6 +1338,7 @@ function financeRoutes(collections) {
 
       const {
         receiptNo,
+        accountNumber,
         payerName,
         payerType,
         donorName,
@@ -745,17 +1360,18 @@ function financeRoutes(collections) {
         });
       }
 
-      // মোট আয় হিসাব
-      const itemsTotal = items.reduce(
-        (sum, item) => sum + (parseFloat(item.amount) || 0),
-        0,
+      // মোট আয় হিসাব (২ দশমিক স্থান পর্যন্ত রাউন্ডিং)
+      const itemsTotal = round2(
+        items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
       );
-      const parsedDiscount = parseFloat(discount) || 0;
-      const totalIncome = itemsTotal - parsedDiscount;
+      const parsedDiscount = round2(parseFloat(discount) || 0);
+      const totalIncome = round2(itemsTotal - parsedDiscount);
+      const fundAttribution = resolveFundAttribution(accountNumber, items);
 
       const updateDoc = {
         $set: {
           receiptNo,
+          ...fundAttribution,
           payerName: payerName || "N/A",
           payerType,
           donorName,
@@ -767,7 +1383,8 @@ function financeRoutes(collections) {
           month,
           items: items.map((item) => ({
             head: item.head,
-            amount: parseFloat(item.amount) || 0,
+            amount: round2(parseFloat(item.amount) || 0),
+            accountNumber: item.accountNumber || fundAttribution.accountNumber,
           })),
           totalIncome,
           paymentMethod: paymentMethod || "Cash",
@@ -814,6 +1431,7 @@ function financeRoutes(collections) {
 
       const {
         voucherNo,
+        accountNumber,
         receiverName,
         advanceAmount,
         chequeNo,
@@ -831,16 +1449,17 @@ function financeRoutes(collections) {
         });
       }
 
-      const totalExpense = items.reduce(
-        (sum, item) => sum + (parseFloat(item.amount) || 0),
-        0,
+      const totalExpense = round2(
+        items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0),
       );
-      const parsedAdvance = parseFloat(advanceAmount) || 0;
-      const balance = parsedAdvance - totalExpense;
+      const parsedAdvance = round2(parseFloat(advanceAmount) || 0);
+      const balance = round2(parsedAdvance - totalExpense);
+      const fundAttribution = resolveFundAttribution(accountNumber, items);
 
       const updateDoc = {
         $set: {
           voucherNo,
+          ...fundAttribution,
           receiverName: receiverName || "N/A",
           advanceAmount: parsedAdvance,
           chequeNo: chequeNo || "",
@@ -848,7 +1467,8 @@ function financeRoutes(collections) {
           month,
           items: items.map((item) => ({
             head: item.head,
-            amount: parseFloat(item.amount) || 0,
+            amount: round2(parseFloat(item.amount) || 0),
+            accountNumber: item.accountNumber || fundAttribution.accountNumber,
             institutionName: item.institutionName || "",
             shopName: item.shopName || "",
             shopVoucher: item.shopVoucher || "",
