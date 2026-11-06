@@ -74,6 +74,19 @@ async function connectDB() {
     teacherAttendanceCollection: database.collection("teacherattendance"),
   };
 
+  // ডুপ্লিকেট মার্কস রোধে ইউনিক কম্পাউন্ড ইনডেক্স নিশ্চিত করা
+  collections.marksCollection
+    .createIndex(
+      { studentId: 1, year: 1, subject: 1 },
+      { unique: true, name: "unique_student_year_subject" },
+    )
+    .catch((idxErr) => {
+      console.warn(
+        "Marks unique index warning:",
+        idxErr?.message || idxErr,
+      );
+    });
+
   return { client, database, collections };
 }
 

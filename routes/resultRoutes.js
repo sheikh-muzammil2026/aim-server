@@ -21,6 +21,82 @@ function resultRoutes(collectionsOrApp, helpers, database) {
     collections;
   const { getAuthUser, isAdminUser, sanitizeYear } = authHelpers;
 
+  const getStudentClass = (s) => {
+    if (!s) return "N/A";
+    if (s.divisionAcademy?.active && s.divisionAcademy?.class)
+      return s.divisionAcademy.class;
+    if (s.divisionHifz?.active && s.divisionHifz?.class)
+      return s.divisionHifz.class;
+    if (s.divisionPreHifz?.active && s.divisionPreHifz?.class)
+      return s.divisionPreHifz.class;
+    return (
+      s.divisionHifz?.class ||
+      s.divisionPreHifz?.class ||
+      s.divisionAcademy?.class ||
+      s.officeUse?.recommendedClass ||
+      s.class ||
+      "N/A"
+    );
+  };
+
+  /**
+   * ডুপ্লিকেট সাবজেক্ট মার্কস রিমুভ করার হেল্পার।
+   * একই বিষয়ে একাধিক রেকর্ড থাকলে বর্তমান ক্লাস, পাবলিশড স্ট্যাটাস এবং সর্বশেষ আপডেটকৃত এন্ট্রিটি রাখা হয়।
+   */
+  const deduplicateSubjectMarks = (marksArray = [], preferredClass = "") => {
+    if (!Array.isArray(marksArray) || marksArray.length <= 1) {
+      return Array.isArray(marksArray) ? marksArray : [];
+    }
+
+    const getScore = (item) => {
+      let score = 0;
+      if (
+        preferredClass &&
+        preferredClass !== "N/A" &&
+        item.class === preferredClass
+      ) {
+        score += 100;
+      }
+      if (
+        item.isPublished ||
+        item.term1?.isPublished ||
+        item.term2?.isPublished ||
+        item.annual?.isPublished
+      ) {
+        score += 50;
+      }
+      return score;
+    };
+
+    const getTimestamp = (item) => {
+      const t = new Date(item.updatedAt || item.createdAt || 0).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+
+    const sorted = [...marksArray].sort((a, b) => {
+      const scoreDiff = getScore(a) - getScore(b);
+      if (scoreDiff !== 0) return scoreDiff;
+      return getTimestamp(a) - getTimestamp(b);
+    });
+
+    const uniqueSubjects = Array.from(
+      new Map(
+        sorted.map((item) => [
+          String(
+            item.subjectCode ||
+              item.subjectId ||
+              item.subjectName ||
+              item.subject ||
+              "",
+          ).trim(),
+          item,
+        ]),
+      ).values(),
+    );
+
+    return uniqueSubjects;
+  };
+
   /**
    * অ্যাডমিন ওয়ান-টাইম রেজাল্ট পাবলিশ ফিল্ড মাইগ্রেশন API
    * Endpoint: POST /api/admin/results/migrate-publish-status
@@ -459,7 +535,10 @@ function resultRoutes(collectionsOrApp, helpers, database) {
       // ৫. শিক্ষার্থীদের লিস্ট ও মার্কস মার্জ করে মেরিট শিট তৈরি করা
       const results = students.map((student) => {
         const sId = String(student.studentId);
-        const studentMarks = marksByStudent[sId] || [];
+        const studentMarks = deduplicateSubjectMarks(
+          marksByStudent[sId] || [],
+          className,
+        );
 
         const allSubjects = studentMarks.map((item) => ({
           subject: item.subject,
@@ -623,13 +702,18 @@ function resultRoutes(collectionsOrApp, helpers, database) {
         });
       }
 
+      const studentClass = getStudentClass(student);
+
       // marksCollection থেকে মার্কস নিয়ে আসা
-      const marksList = await marksCollection
+      const rawMarksList = await marksCollection
         .find({
           studentId: String(studentId),
           year: { $regex: new RegExp(`^${targetYear}`) },
         })
         .toArray();
+
+      // বিষয়ভিত্তিক ডুপ্লিকেট মার্কস ডিডুপ্লিকেশন (বর্তমান শ্রেণি ও সর্বশেষ আপডেট অগ্রাধিকার)
+      const marksList = deduplicateSubjectMarks(rawMarksList, studentClass);
 
       // পাবলিশ স্ট্যাটাস যাচাই
       let isPublished = false;
@@ -665,24 +749,6 @@ function resultRoutes(collectionsOrApp, helpers, database) {
         annual: item.annual || {},
         isPublished: item.isPublished,
       }));
-
-      const getStudentClass = (s) => {
-        if (s.divisionAcademy?.active && s.divisionAcademy?.class)
-          return s.divisionAcademy.class;
-        if (s.divisionHifz?.active && s.divisionHifz?.class)
-          return s.divisionHifz.class;
-        if (s.divisionPreHifz?.active && s.divisionPreHifz?.class)
-          return s.divisionPreHifz.class;
-        return (
-          s.divisionHifz?.class ||
-          s.divisionPreHifz?.class ||
-          s.divisionAcademy?.class ||
-          s.class ||
-          "N/A"
-        );
-      };
-
-      const studentClass = getStudentClass(student);
 
       // মোট নম্বর (Total Marks) এর ভিত্তিতে ক্লাসের মেধাস্থান (Merit Position) হিসাব করা
       let meritPosition = "-";
@@ -733,7 +799,10 @@ function resultRoutes(collectionsOrApp, helpers, database) {
 
           allClassStudents.forEach((cs) => {
             const sid = String(cs.studentId);
-            const studentSubjectMarks = marksByStudent[sid] || [];
+            const studentSubjectMarks = deduplicateSubjectMarks(
+              marksByStudent[sid] || [],
+              studentClass,
+            );
             if (studentSubjectMarks.length === 0) return;
 
             let totalMarks = 0;
@@ -961,7 +1030,6 @@ function resultRoutes(collectionsOrApp, helpers, database) {
 
         const filter = {
           studentId: String(studentId),
-          class: studentClass,
           subject: subject,
           year: academicYear,
         };
@@ -978,6 +1046,7 @@ function resultRoutes(collectionsOrApp, helpers, database) {
             filter: filter,
             update: {
               $set: {
+                class: studentClass,
                 studentName: studentName || "N/A",
                 roll: roll || "N/A",
                 teacher: teacherEmail,
