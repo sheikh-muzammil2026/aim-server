@@ -24,6 +24,7 @@ const authRoutes = require("./routes/authRoutes");
 const routineRoutes = require("./routes/routineRoutes");
 const syllabusRoutes = require("./routes/syllabusRoutes");
 const resultRoutes = require("./routes/resultRoutes");
+const parentFeedbackRoutes = require("./routes/parentFeedbackRoutes");
 
 // 3. Domain Modules
 const administrationRoutes = require("./routes/administrationRoutes");
@@ -62,6 +63,7 @@ async function run() {
     app.use(routineRoutes(collections, authHelpers, database));
     app.use(syllabusRoutes(collections, authHelpers, database));
     app.use(resultRoutes(collections, authHelpers, database));
+    app.use(parentFeedbackRoutes(collections, authHelpers, database));
 
     // Mount Existing Domain Modules
     administrationRoutes(app, database);

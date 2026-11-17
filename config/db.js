@@ -72,6 +72,7 @@ async function connectDB() {
     staffCollection: database.collection("staff"),
     staffAttendanceCollection: database.collection("staffattendance"),
     teacherAttendanceCollection: database.collection("teacherattendance"),
+    parentFeedbacksCollection: database.collection("parent_feedbacks"),
   };
 
   // ডুপ্লিকেট মার্কস রোধে ইউনিক কম্পাউন্ড ইনডেক্স নিশ্চিত করা
