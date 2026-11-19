@@ -120,12 +120,86 @@ function studentRoutes(collections, helpers) {
       const total = await studentsCollection.countDocuments(filter);
       const totalPages = Math.ceil(total / limitNum) || 1;
 
+      // Compute division breakdown counts matching the active filters
+      const preHifzHifzFilter = {
+        ...filter,
+        $or: [{ "divisionPreHifz.active": true }, { "divisionHifz.active": true }],
+      };
+      const academyFilter = {
+        ...filter,
+        "divisionAcademy.active": true,
+      };
+
+      const [preHifzHifzTotal, academyTotal] = await Promise.all([
+        studentsCollection.countDocuments(preHifzHifzFilter),
+        studentsCollection.countDocuments(academyFilter),
+      ]);
+
+      // Enforce canonical class-wise ordering: Play -> Nursery -> ... -> Class 10 -> Pre-Hifz -> Hifz
+      const pipeline = [
+        { $match: filter },
+        {
+          $addFields: {
+            extractedClass: {
+              $cond: [
+                { $eq: ["$divisionAcademy.active", true] },
+                { $ifNull: ["$divisionAcademy.class", ""] },
+                {
+                  $cond: [
+                    { $eq: ["$divisionPreHifz.active", true] },
+                    { $ifNull: ["$divisionPreHifz.class", ""] },
+                    {
+                      $cond: [
+                        { $eq: ["$divisionHifz.active", true] },
+                        { $ifNull: ["$divisionHifz.class", ""] },
+                        { $ifNull: ["$officeUse.recommendedClass", ""] },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+        {
+          $addFields: {
+            classRank: {
+              $switch: {
+                branches: [
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "প্লে|play", options: "i" } }, then: 10 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "নার্সারি|নার্সারী|nursery", options: "i" } }, then: 20 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "কেজি|kg", options: "i" } }, then: 30 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "প্রথম|১ম|one", options: "i" } }, then: 40 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "দ্বিতীয়|দ্বীতিয়|২য়|two", options: "i" } }, then: 50 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "তৃতীয়|৩য়|three", options: "i" } }, then: 60 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "চতুর্থ|৪র্থ|four", options: "i" } }, then: 70 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "পঞ্চম|৫ম|five", options: "i" } }, then: 80 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "ষষ্ঠ|৬ষ্ঠ|six", options: "i" } }, then: 90 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "সপ্তম|৭ম|seven", options: "i" } }, then: 100 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "অষ্টম|৮ম|eight", options: "i" } }, then: 110 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "নবম|৯ম|nine", options: "i" } }, then: 120 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "দশম|১০ম|ten", options: "i" } }, then: 130 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "১১|একাদশ", options: "i" } }, then: 140 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "১২|দ্বাদশ", options: "i" } }, then: 150 },
+                  { case: { $or: [{ $eq: ["$divisionPreHifz.active", true] }, { $regexMatch: { input: "$extractedClass", regex: "কায়দা|আমপারা" } }] }, then: 200 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "নাজেরা|নাযেরা" } }, then: 210 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "সবক" } }, then: 220 },
+                  { case: { $regexMatch: { input: "$extractedClass", regex: "শুনানি" } }, then: 230 },
+                  { case: { $or: [{ $eq: ["$divisionHifz.active", true] }, { $regexMatch: { input: "$extractedClass", regex: "হিফজ" } }] }, then: 240 },
+                ],
+                default: 900,
+              },
+            },
+          },
+        },
+        { $sort: { classRank: 1, roll: 1, studentId: 1 } },
+        { $skip: skip },
+        { $limit: limitNum },
+        { $project: { extractedClass: 0, classRank: 0 } },
+      ];
+
       const students = await studentsCollection
-        .find(filter)
-        .sort({ roll: 1, studentId: 1 })
-        .collation({ locale: "en", numericOrdering: true })
-        .skip(skip)
-        .limit(limitNum)
+        .aggregate(pipeline, { collation: { locale: "en", numericOrdering: true } })
         .toArray();
 
       // ৩. ফ্রন্টএন্ডের প্রত্যাশিত ফরম্যাটে রেসপন্স পাঠানো
@@ -139,6 +213,11 @@ function studentRoutes(collections, helpers) {
         totalCount: total,
         count: students.length,
         currentPage: pageNum,
+        stats: {
+          total: total,
+          preHifzHifz: preHifzHifzTotal,
+          academy: academyTotal,
+        },
       });
     } catch (error) {
       console.error("Fetch Students API Error:", error);
