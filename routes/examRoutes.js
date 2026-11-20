@@ -317,6 +317,11 @@ function examRoutes(collections, helpers, database) {
             seat.studentId ||
             seat.student_id ||
             (student ? student.studentId : ""),
+          studentImage:
+            student?.studentImage ||
+            student?.profilePhoto ||
+            seat.studentImage ||
+            "",
         };
       });
 
@@ -329,6 +334,7 @@ function examRoutes(collections, helpers, database) {
           .collection("students")
           .find({
             status: "Approved",
+            activity: "active",
             $or: [
               { hallNo: String(hallNo) },
               { hallNo: Number(hallNo) },
@@ -374,6 +380,8 @@ function examRoutes(collections, helpers, database) {
                 student.roll ||
                 student.officeUse?.rollNumber ||
                 student.studentId,
+              studentImage:
+                student.studentImage || student.profilePhoto || "",
               semester: semester || "দ্বিতীয় সাময়িক",
             };
           })
