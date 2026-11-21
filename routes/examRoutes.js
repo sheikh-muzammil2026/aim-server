@@ -12,9 +12,29 @@ function examRoutes(collections, helpers, database) {
    */
   router.get("/api/seat-plans/summary", async (req, res) => {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      const bnToEn = (str) => {
+        if (!str && str !== 0) return "";
+        const bnDigits = { "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9" };
+        return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
+      };
+
+      const extractDigits = (val) => {
+        if (!val && val !== 0) return "";
+        const enStr = bnToEn(val);
+        const match = enStr.match(/\d+/);
+        return match ? match[0] : String(val).trim();
+      };
+
       // ১. স্টুডেন্টদের তালিকা খোঁজা (Approved এবং Active স্ট্যাটাসসহ, রোল অনুযায়ী সর্ট)
       const students = await studentsCollection
-        .find({ status: "Approved", activity: "active" })
+        .find({
+          status: { $regex: /^approved$/i },
+          activity: { $regex: /^active$/i },
+        })
         .sort({ roll: 1, studentId: 1 })
         .collation({ locale: "en", numericOrdering: true })
         .toArray();
@@ -47,20 +67,12 @@ function examRoutes(collections, helpers, database) {
         const sId = student.studentId;
         const sMongoId = student._id.toString();
 
-        // ইউনিকনেস ভ্যালিডেশন
-        if (sId && seenStudentIds.has(sId)) {
-          console.warn(`Duplicate studentId detected in summary: ${sId}`);
-          return;
-        }
-        if (seenMongoIds.has(sMongoId)) {
-          console.warn(`Duplicate Mongo ID detected in summary: ${sMongoId}`);
-          return;
-        }
+        if (sId && seenStudentIds.has(sId)) return;
+        if (seenMongoIds.has(sMongoId)) return;
 
         if (sId) seenStudentIds.add(sId);
         seenMongoIds.add(sMongoId);
 
-        // শ্রেণি নির্ধারণ
         let rawClass = "N/A";
         if (student.divisionPreHifz?.active) {
           rawClass = student.divisionPreHifz.class || "N/A";
@@ -74,18 +86,17 @@ function examRoutes(collections, helpers, database) {
 
         const className = normalizeClassName(rawClass);
 
-        // সিট প্ল্যান তথ্য বের করা
         const matchedPlan = seatPlanMap[sId] || seatPlanMap[sMongoId];
-        let hallNo =
+        let rawHallNo =
           matchedPlan?.room ||
           matchedPlan?.building ||
           student.seatPlan?.hallNo ||
           student.hallNo;
-        let seatNo =
+        let rawSeatNo =
           matchedPlan?.seatNo || student.seatPlan?.seatNo || student.seatNo;
 
-        if (hallNo) hallNo = String(hallNo).trim();
-        if (seatNo) seatNo = String(seatNo).trim();
+        const hallNo = extractDigits(rawHallNo);
+        const seatNo = extractDigits(rawSeatNo);
 
         if (hallNo && seatNo && hallNo !== "" && seatNo !== "") {
           allocatedSeats.push({
@@ -191,6 +202,10 @@ function examRoutes(collections, helpers, database) {
    */
   router.get("/api/seat-plan", async (req, res) => {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
       console.log("Incoming Query Params:", req.query);
       const { hallNo, semester } = req.query;
       if (!hallNo) {
@@ -200,202 +215,106 @@ function examRoutes(collections, helpers, database) {
         });
       }
 
-      // Convert English digits to Bengali digits helper
-      const englishToBengali = (num) => {
-        const digits = {
-          0: "০",
-          1: "১",
-          2: "২",
-          3: "৩",
-          4: "৪",
-          5: "৫",
-          6: "৬",
-          7: "৭",
-          8: "৮",
-          9: "৯",
-        };
-        return String(num)
-          .split("")
-          .map((d) => digits[d] || d)
-          .join("");
+      // Convert English to Bengali and Bengali to English helper
+      const bnToEn = (str) => {
+        if (!str && str !== 0) return "";
+        const bnDigits = { "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9" };
+        return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
       };
 
-      const hallQuery = !isNaN(hallNo) ? Number(hallNo) : hallNo;
-      const bnHall = englishToBengali(hallNo);
-
-      const query = {
-        $or: [
-          { hallNo: hallQuery },
-          { hallNo: String(hallNo) },
-          { hallNo: bnHall },
-        ],
-        ...(semester && { semester: semester }),
+      const enToBn = (str) => {
+        if (!str && str !== 0) return "";
+        const enDigits = { "0": "০", "1": "১", "2": "২", "3": "৩", "4": "৪", "5": "৫", "6": "৬", "7": "৭", "8": "৮", "9": "৯" };
+        return String(str).replace(/[0-9]/g, (d) => enDigits[d] || d);
       };
 
-      console.log("Query constructed for seats:", JSON.stringify(query));
-      let data = await database
-        .collection("seats")
-        .find(query)
-        .sort({ seatNo: 1 })
+      const extractDigits = (val) => {
+        if (!val && val !== 0) return "";
+        const enStr = bnToEn(val);
+        const match = enStr.match(/\d+/);
+        return match ? match[0] : String(val).trim();
+      };
+
+      const cleanHall = extractDigits(hallNo);
+      const bnHall = enToBn(cleanHall);
+
+      // ১. Students কালেকশন থেকে সক্রিয় ও অনুমোদিত শিক্ষার্থীদের ডাটা ফেচ করা
+      const students = await database
+        .collection("students")
+        .find({
+          status: { $regex: /^approved$/i },
+          activity: { $regex: /^active$/i },
+          $or: [
+            { hallNo: cleanHall },
+            { hallNo: Number(cleanHall) },
+            { hallNo: bnHall },
+            { hallNo: { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
+            { "seatPlan.hallNo": cleanHall },
+            { "seatPlan.hallNo": Number(cleanHall) },
+            { "seatPlan.hallNo": bnHall },
+            { "seatPlan.hallNo": { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
+          ],
+        })
         .toArray();
 
-      // Enrich seats with student name from 'students' collection if missing or incomplete
-      const seatStudentIds = data
-        .map((s) => s.studentId || s.student_id)
-        .filter(Boolean);
-      let studentDocs = [];
-      if (seatStudentIds.length > 0) {
-        studentDocs = await database
-          .collection("students")
-          .find({
-            studentId: { $in: seatStudentIds.map((id) => String(id)) },
-          })
-          .toArray();
-      }
-
-      const studentMap = {};
-      studentDocs.forEach((s) => {
-        studentMap[String(s.studentId)] = s;
-      });
-
-      data = data.map((seat) => {
-        const student = studentMap[String(seat.studentId || seat.student_id)];
-        let nameVal =
-          seat.name ||
-          seat.studentName ||
-          seat.studentNameBangla ||
-          seat.student_name;
-        let classVal =
-          seat.class ||
-          seat.className ||
-          seat.class_name ||
-          seat.classGroup ||
-          seat.jamayat;
-        let rollVal =
-          seat.roll ||
-          seat.rollNo ||
-          seat.roll_no ||
-          seat.studentId ||
-          seat.student_id;
-
-        if (student) {
-          // Always prioritize studentNameBangla from the student profile
-          if (
-            !nameVal ||
-            nameVal === "Unknown" ||
-            nameVal === "অন্যান্য" ||
-            nameVal === seat.studentId
-          ) {
-            nameVal = student.studentNameBangla || student.name || "Unknown";
+      const data = students
+        .map((student) => {
+          let classVal = "N/A";
+          let divisionName = "N/A";
+          if (student.divisionPreHifz?.active) {
+            classVal = student.divisionPreHifz.class || "N/A";
+            divisionName = "প্রি-হিফজ";
+          } else if (student.divisionHifz?.active) {
+            classVal = student.divisionHifz.class || "N/A";
+            divisionName = "হিফজ বিভাগ";
+          } else if (student.divisionAcademy?.active) {
+            classVal = student.divisionAcademy.class || "N/A";
+            divisionName = "একাডেমিক";
+          } else {
+            classVal = student.officeUse?.recommendedClass || "N/A";
           }
-          if (!classVal || classVal === "N/A") {
-            if (student.divisionPreHifz?.active) {
-              classVal = student.divisionPreHifz.class;
-            } else if (student.divisionHifz?.active) {
-              classVal = student.divisionHifz.class;
-            } else if (student.divisionAcademy?.active) {
-              classVal = student.divisionAcademy.class;
-            } else {
-              classVal = student.officeUse?.recommendedClass || "N/A";
-            }
-          }
-          if (!rollVal) {
-            rollVal =
+
+          const currentSeatPlan = student.seatPlan || {};
+          const rawSeatNo = student.seatNo || currentSeatPlan.seatNo || "";
+          const seatDigits = extractDigits(rawSeatNo);
+          const actualSeatNo = parseInt(seatDigits, 10) || 0;
+
+          const rawBenchNo = student.benchNo || currentSeatPlan.benchNo || "";
+          const benchDigits = extractDigits(rawBenchNo);
+
+          return {
+            _id: student._id.toString(),
+            hallNo: Number(cleanHall) || 1,
+            seatNo: actualSeatNo,
+            benchNo: benchDigits ? Number(benchDigits) : (actualSeatNo > 0 ? Math.ceil(actualSeatNo / 2) : ""),
+            class: classVal,
+            divisionName,
+            name:
+              student.studentNameBangla ||
+              student.studentNameEnglish ||
+              student.name ||
+              "নাম নেই",
+            studentId: student.studentId || "",
+            roll:
               student.roll ||
               student.officeUse?.rollNumber ||
-              student.studentId;
-          }
-        }
-
-        return {
-          ...seat,
-          seatNo: Number(seat.seatNo || seat.seat_no || 0),
-          class: classVal || "N/A",
-          name: nameVal || "Unknown",
-          roll: rollVal || "",
-          studentId:
-            seat.studentId ||
-            seat.student_id ||
-            (student ? student.studentId : ""),
-          studentImage:
-            student?.studentImage ||
-            student?.profilePhoto ||
-            seat.studentImage ||
-            "",
-        };
-      });
-
-      // Fallback to students collection if seats collection has no documents
-      if (data.length === 0) {
-        console.log(
-          "No seats found in 'seats' collection, attempting fallback to 'students' collection...",
-        );
-        const students = await database
-          .collection("students")
-          .find({
-            status: "Approved",
-            activity: "active",
-            $or: [
-              { hallNo: String(hallNo) },
-              { hallNo: Number(hallNo) },
-              { hallNo: bnHall },
-              { "seatPlan.hallNo": String(hallNo) },
-              { "seatPlan.hallNo": Number(hallNo) },
-              { "seatPlan.hallNo": bnHall },
-            ],
-          })
-          .toArray();
-
-        data = students
-          .map((student) => {
-            let classVal = "N/A";
-            if (student.divisionPreHifz?.active) {
-              classVal = student.divisionPreHifz.class || "N/A";
-            } else if (student.divisionHifz?.active) {
-              classVal = student.divisionHifz.class || "N/A";
-            } else if (student.divisionAcademy?.active) {
-              classVal = student.divisionAcademy.class || "N/A";
-            } else {
-              classVal = student.officeUse?.recommendedClass || "N/A";
-            }
-
-            const currentSeatPlan = student.seatPlan || {};
-            const actualSeatNo = Number(
-              student.seatNo || currentSeatPlan.seatNo || 0,
-            );
-
-            return {
-              _id: student._id.toString(),
-              hallNo: Number(
-                student.hallNo || currentSeatPlan.hallNo || hallNo,
-              ),
-              seatNo: actualSeatNo,
-              class: classVal,
-              name:
-                student.studentNameBangla ||
-                student.name ||
-                student.studentId,
-              studentId: student.studentId,
-              roll:
-                student.roll ||
-                student.officeUse?.rollNumber ||
-                student.studentId,
-              studentImage:
-                student.studentImage || student.profilePhoto || "",
-              semester: semester || "দ্বিতীয় সাময়িক",
-            };
-          })
-          .filter((s) => s.seatNo > 0);
-      }
-
-      // Ensure data is sorted in strictly ascending order based on seatNo as fallback/final check
-      data.sort(
-        (a, b) =>
-          Number(a.seatNo || a.seat_no) - Number(b.seatNo || b.seat_no),
-      );
+              student.studentId ||
+              "",
+            studentImage:
+              student.studentImage ||
+              student.profilePhoto ||
+              student.photoUrl ||
+              student.profileImage ||
+              student.image ||
+              student.avatar ||
+              "",
+            semester: semester || "২য় সাময়িক পরীক্ষা",
+          };
+        })
+        .filter((s) => s.seatNo > 0)
+        .sort((a, b) => a.seatNo - b.seatNo);
 
       console.log("MongoDB Search Results (data count):", data.length);
-      console.log("MongoDB Search Results:", data);
 
       res.status(200).json({
         success: true,

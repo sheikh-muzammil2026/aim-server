@@ -235,21 +235,40 @@ function studentRoutes(collections, helpers) {
   router.patch("/api/students/:id/seat-plan", async (req, res) => {
     try {
       const { id } = req.params;
-      const { hallNo, seatNo } = req.body;
+      const { hallNo, benchNo, seatNo } = req.body;
+
+      const bnToEn = (str) => {
+        if (!str && str !== 0) return "";
+        const bnDigits = { "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9" };
+        return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
+      };
+
+      const extractDigits = (val) => {
+        if (!val && val !== 0) return "";
+        const enStr = bnToEn(val);
+        const match = enStr.match(/\d+/);
+        return match ? match[0] : String(val).trim();
+      };
+
+      const cleanHallNo = extractDigits(hallNo);
+      const cleanBenchNo = extractDigits(benchNo);
+      const cleanSeatNo = extractDigits(seatNo);
 
       let filter;
       try {
         filter = { _id: new ObjectId(id) };
       } catch (e) {
-        filter = { studentId: id };
+        filter = { studentId: String(id) };
       }
 
       const updateDoc = {
         $set: {
-          "seatPlan.hallNo": hallNo,
-          "seatPlan.seatNo": seatNo,
-          hallNo: hallNo,
-          seatNo: seatNo,
+          "seatPlan.hallNo": cleanHallNo,
+          "seatPlan.benchNo": cleanBenchNo,
+          "seatPlan.seatNo": cleanSeatNo,
+          hallNo: cleanHallNo,
+          benchNo: cleanBenchNo,
+          seatNo: cleanSeatNo,
           updatedAt: new Date(),
         },
       };
@@ -266,12 +285,87 @@ function studentRoutes(collections, helpers) {
       res.status(200).json({
         success: true,
         message: "সিট প্ল্যান সফলভাবে আপডেট করা হয়েছে।",
+        data: {
+          hallNo: cleanHallNo,
+          benchNo: cleanBenchNo,
+          seatNo: cleanSeatNo,
+        },
       });
     } catch (error) {
       console.error("Update Seat Plan Error:", error);
       res.status(500).json({
         success: false,
         message: "সার্ভারে সিট প্ল্যান আপডেট করতে সমস্যা হয়েছে।",
+      });
+    }
+  });
+
+  /**
+   * বাল্ক সিট প্ল্যান আপডেট করার API (Bulk update)
+   * Endpoint: POST /api/students/bulk-seat-plan
+   */
+  router.post("/api/students/bulk-seat-plan", async (req, res) => {
+    try {
+      const { updates } = req.body;
+      if (!Array.isArray(updates) || updates.length === 0) {
+        return res.status(400).json({ success: false, message: "No updates provided" });
+      }
+
+      const bnToEn = (str) => {
+        if (!str && str !== 0) return "";
+        const bnDigits = { "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9" };
+        return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
+      };
+
+      const extractDigits = (val) => {
+        if (!val && val !== 0) return "";
+        const enStr = bnToEn(val);
+        const match = enStr.match(/\d+/);
+        return match ? match[0] : String(val).trim();
+      };
+
+      const bulkOps = updates.map((u) => {
+        let filter;
+        try {
+          filter = { _id: new ObjectId(u.id) };
+        } catch (e) {
+          filter = { studentId: String(u.id) };
+        }
+
+        const cleanHallNo = extractDigits(u.hallNo);
+        const cleanBenchNo = extractDigits(u.benchNo);
+        const cleanSeatNo = extractDigits(u.seatNo);
+
+        return {
+          updateOne: {
+            filter,
+            update: {
+              $set: {
+                "seatPlan.hallNo": cleanHallNo,
+                "seatPlan.benchNo": cleanBenchNo,
+                "seatPlan.seatNo": cleanSeatNo,
+                hallNo: cleanHallNo,
+                benchNo: cleanBenchNo,
+                seatNo: cleanSeatNo,
+                updatedAt: new Date(),
+              },
+            },
+          },
+        };
+      });
+
+      const bulkResult = await studentsCollection.bulkWrite(bulkOps);
+
+      res.status(200).json({
+        success: true,
+        message: "সকল সিট প্ল্যান সফলভাবে আপডেট করা হয়েছে।",
+        modifiedCount: bulkResult.modifiedCount,
+      });
+    } catch (error) {
+      console.error("Bulk Seat Plan Error:", error);
+      res.status(500).json({
+        success: false,
+        message: "সার্ভারে বাল্ক সিট প্ল্যান আপডেট করতে সমস্যা হয়েছে।",
       });
     }
   });
