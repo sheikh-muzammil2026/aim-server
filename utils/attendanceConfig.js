@@ -11,14 +11,14 @@ const MADRASA_LOCATION = {
 };
 
 // Attendance Schedule & Rules (Teachers)
-// Office Hours: Morning 8:00 AM to 1:10 PM (13:10)
+// Office Hours: Morning 8:40 AM to 12:00 PM (12:00)
 const ATTENDANCE_RULES = {
   OFFICE_START_HOUR: 8,
-  OFFICE_START_MINUTE: 0,
+  OFFICE_START_MINUTE: 40,
   ON_TIME_CHECKIN_CUTOFF_HOUR: 8,
-  ON_TIME_CHECKIN_CUTOFF_MINUTE: 5, // <= 8:05 AM is 'On Time', > 8:05 AM is 'Late'
-  OFFICE_END_HOUR: 13,
-  OFFICE_END_MINUTE: 10, // >= 1:10 PM is 'On Time' departure, < 1:10 PM is 'Early'
+  ON_TIME_CHECKIN_CUTOFF_MINUTE: 40, // <= 8:45 AM is 'On Time', > 8:45 AM is 'Late'
+  OFFICE_END_HOUR: 12,
+  OFFICE_END_MINUTE: 30, // >= 12:00 PM is 'On Time' departure, < 12:00 PM is 'Early'
 };
 
 // Staff Attendance Schedule & Rules (2 Terms Per Day)
@@ -142,6 +142,7 @@ function getDhakaTime(date = new Date()) {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    hourCycle: "h23",
   });
 
   const parts = formatter.formatToParts(dateObj);
@@ -153,7 +154,8 @@ function getDhakaTime(date = new Date()) {
   const year = map.year;
   const month = map.month;
   const day = map.day;
-  const hour = parseInt(map.hour, 10);
+  const rawHour = parseInt(map.hour, 10);
+  const hour = rawHour === 24 ? 0 : rawHour;
   const minute = parseInt(map.minute, 10);
   const second = parseInt(map.second, 10);
 
@@ -281,13 +283,13 @@ const RESIDENTIAL_ATTENDANCE_RULES = {
     checkInStartHour: 7,
     checkInStartMinute: 15,
     checkInCutoffHour: 8,
-    checkInCutoffMinute: 5, // Cutoff 8:05 AM (Late after 8:05 AM)
-    checkInWindowLabel: "সকাল ০৮:০৫ এর পূর্বে",
-    checkOutStartHour: 13,
-    checkOutStartMinute: 10,
-    checkOutEndHour: 13,
-    checkOutEndMinute: 30, // Early before 1:10 PM
-    checkOutWindowLabel: "দুপুর ০১:১০ টা",
+    checkInCutoffMinute: 40, // Cutoff 8:45 AM (Late after 8:45 AM)
+    checkInWindowLabel: "সকাল ০৮:৪০ এর পূর্বে",
+    checkOutStartHour: 12,
+    checkOutStartMinute: 0,
+    checkOutEndHour: 12,
+    checkOutEndMinute: 30, // Early before 12:00 PM
+    checkOutWindowLabel: "দুপুর ১২:৩০ টা",
   },
   shift3: {
     id: "shift3",
@@ -395,14 +397,14 @@ function evaluateTeacherShiftCheckIn(category, shiftId = "shift1", date = new Da
   const { minutesSinceMidnight } = getDhakaTime(date);
 
   if (category === "regular" || !category) {
-    const isLate =
-      minutesSinceMidnight >
+    const cutoffMinutes =
       ATTENDANCE_RULES.ON_TIME_CHECKIN_CUTOFF_HOUR * 60 +
-        ATTENDANCE_RULES.ON_TIME_CHECKIN_CUTOFF_MINUTE;
+      ATTENDANCE_RULES.ON_TIME_CHECKIN_CUTOFF_MINUTE;
+    const isLate = minutesSinceMidnight > cutoffMinutes;
     return {
       status: isLate ? "Late" : "On Time",
       isLate,
-      cutoffMinutes: 485,
+      cutoffMinutes,
     };
   }
 
@@ -434,13 +436,13 @@ function evaluateTeacherShiftCheckOut(category, shiftId = "shift1", date = new D
   const { minutesSinceMidnight } = getDhakaTime(date);
 
   if (category === "regular" || !category) {
-    const isEarly =
-      minutesSinceMidnight <
+    const startOutMinutes =
       ATTENDANCE_RULES.OFFICE_END_HOUR * 60 + ATTENDANCE_RULES.OFFICE_END_MINUTE;
+    const isEarly = minutesSinceMidnight < startOutMinutes;
     return {
       status: isEarly ? "Early" : "On Time",
       isEarly,
-      startOutMinutes: 790,
+      startOutMinutes,
     };
   }
 
@@ -476,7 +478,7 @@ function getActiveTeacherShift(category, date = new Date()) {
   if (category === "residential") {
     // shift1 check-out is 07:10 (430m). Up to 450m (07:30 AM), consider shift1.
     if (minutesSinceMidnight < 450) return "shift1";
-    // shift2 check-out is 13:10 (790m). Up to 900m (15:00 / 03:00 PM), consider shift2.
+    // shift2 check-out is 12:00 (720m). Up to 900m (15:00 / 03:00 PM), consider shift2.
     if (minutesSinceMidnight < 900) return "shift2";
     // Remaining is shift3 (evening/night).
     return "shift3";

@@ -557,8 +557,8 @@ function teacherRoutes(collections) {
       const shiftRules = getTeacherShiftRules(category);
       const currentShiftRule = (shiftRules && shiftId) ? shiftRules[shiftId] : null;
 
-      const { dateStr } = getDhakaTime();
       const now = new Date();
+      const { dateStr } = getDhakaTime(now);
 
       let checkInStatus = "On Time";
       if (isMultiShift && shiftId) {
@@ -778,8 +778,8 @@ function teacherRoutes(collections) {
       const shiftRules = getTeacherShiftRules(category);
       const currentShiftRule = (shiftRules && shiftId) ? shiftRules[shiftId] : null;
 
-      const { dateStr } = getDhakaTime();
       const now = new Date();
+      const { dateStr } = getDhakaTime(now);
 
       let checkOutStatus = "On Time";
       if (isMultiShift && shiftId) {
