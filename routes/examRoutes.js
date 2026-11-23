@@ -22,6 +22,12 @@ function examRoutes(collections, helpers, database) {
         return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
       };
 
+      const enToBn = (str) => {
+        if (!str && str !== 0) return "";
+        const enDigits = { "0": "০", "1": "১", "2": "২", "3": "৩", "4": "৪", "5": "৫", "6": "৬", "7": "৭", "8": "৮", "9": "৯" };
+        return String(str).replace(/[0-9]/g, (d) => enDigits[d] || d);
+      };
+
       const extractDigits = (val) => {
         if (!val && val !== 0) return "";
         const enStr = bnToEn(val);
@@ -29,8 +35,21 @@ function examRoutes(collections, helpers, database) {
         return match ? match[0] : String(val).trim();
       };
 
+      const normalizeYearBn = (raw) => {
+        const clean = sanitizeYear(String(raw || ""));
+        if (!clean) return "";
+        const enDigits = bnToEn(clean).match(/\d{4}/)?.[0];
+        return enDigits ? enToBn(enDigits) : "";
+      };
+
+      const requestedYearParam = (req.query.year || req.query.sessionYear || "").trim();
+      const requestedYearBn =
+        requestedYearParam && requestedYearParam.toLowerCase() !== "all"
+          ? normalizeYearBn(requestedYearParam)
+          : "";
+
       // ১. স্টুডেন্টদের তালিকা খোঁজা (Approved এবং Active স্ট্যাটাসসহ, রোল অনুযায়ী সর্ট)
-      const students = await studentsCollection
+      const allActiveStudents = await studentsCollection
         .find({
           status: { $regex: /^approved$/i },
           activity: { $regex: /^active$/i },
@@ -38,6 +57,40 @@ function examRoutes(collections, helpers, database) {
         .sort({ roll: 1, studentId: 1 })
         .collation({ locale: "en", numericOrdering: true })
         .toArray();
+
+      // সক্রিয় শিক্ষার্থী ও রুটিন থেকে শিক্ষাবর্ষের তালিকা সংগ্রহ
+      const yearSet = new Set();
+      allActiveStudents.forEach((s) => {
+        const y = normalizeYearBn(s.sessionYear);
+        if (y) yearSet.add(y);
+      });
+      try {
+        const routineYears = await routinesCollection.distinct("gregorianYear");
+        routineYears.forEach((ry) => {
+          const y = normalizeYearBn(ry);
+          if (y) yearSet.add(y);
+        });
+      } catch (yrErr) {
+        console.warn("Could not fetch routine years for summary:", yrErr);
+      }
+
+      if (requestedYearBn) {
+        yearSet.add(requestedYearBn);
+      }
+
+      const years = Array.from(yearSet).sort(
+        (a, b) => Number(bnToEn(b)) - Number(bnToEn(a))
+      );
+      const academicYear = requestedYearBn || years[0] || "২০২৬";
+      if (!years.includes(academicYear)) {
+        years.unshift(academicYear);
+      }
+
+      const students = requestedYearBn
+        ? allActiveStudents.filter(
+            (s) => normalizeYearBn(s.sessionYear) === requestedYearBn
+          )
+        : allActiveStudents;
 
       // ২. seat_plan কালেকশন থেকে ডাটা নিয়ে আসা
       const seatPlans = await seatPlansCollection.find().toArray();
@@ -177,6 +230,8 @@ function examRoutes(collections, helpers, database) {
         res.status(200).json({
           success: true,
           data: fallbackGrouped,
+          academicYear,
+          years,
           validationError: true,
         });
         return;
@@ -185,6 +240,8 @@ function examRoutes(collections, helpers, database) {
       res.status(200).json({
         success: true,
         data: groupedData,
+        academicYear,
+        years,
       });
     } catch (error) {
       console.error("Seat Plan Summary Error:", error);
@@ -207,7 +264,7 @@ function examRoutes(collections, helpers, database) {
       res.setHeader("Expires", "0");
 
       console.log("Incoming Query Params:", req.query);
-      const { hallNo, semester } = req.query;
+      const { hallNo, semester, year, sessionYear } = req.query;
       if (!hallNo) {
         return res.status(400).json({
           success: false,
@@ -235,11 +292,24 @@ function examRoutes(collections, helpers, database) {
         return match ? match[0] : String(val).trim();
       };
 
+      const normalizeYearBn = (raw) => {
+        const clean = sanitizeYear(String(raw || ""));
+        if (!clean) return "";
+        const enDigits = bnToEn(clean).match(/\d{4}/)?.[0];
+        return enDigits ? enToBn(enDigits) : "";
+      };
+
+      const requestedYearParam = String(year || sessionYear || "").trim();
+      const requestedYearBn =
+        requestedYearParam && requestedYearParam.toLowerCase() !== "all"
+          ? normalizeYearBn(requestedYearParam)
+          : "";
+
       const cleanHall = extractDigits(hallNo);
       const bnHall = enToBn(cleanHall);
 
       // ১. Students কালেকশন থেকে সক্রিয় ও অনুমোদিত শিক্ষার্থীদের ডাটা ফেচ করা
-      const students = await database
+      const allHallStudents = await database
         .collection("students")
         .find({
           status: { $regex: /^approved$/i },
@@ -256,6 +326,60 @@ function examRoutes(collections, helpers, database) {
           ],
         })
         .toArray();
+
+      // শিক্ষাবর্ষের তালিকা ও সক্রিয় শিক্ষাবর্ষ নির্ধারণ (রুটিন + শিক্ষার্থী থেকে)
+      const yearSet = new Set();
+      allHallStudents.forEach((s) => {
+        const y = normalizeYearBn(s.sessionYear);
+        if (y) yearSet.add(y);
+      });
+
+      let routineYearBn = "";
+      try {
+        if (semester) {
+          const matchedRoutine = await routinesCollection.findOne(
+            { examTitle: { $regex: new RegExp(`^${String(semester).trim()}$`, "i") } },
+            { sort: { updatedAt: -1 } }
+          );
+          if (matchedRoutine?.gregorianYear) {
+            routineYearBn = normalizeYearBn(matchedRoutine.gregorianYear);
+            if (routineYearBn) yearSet.add(routineYearBn);
+          }
+        }
+        const [studentSessionYears, routineYears] = await Promise.all([
+          database
+            .collection("students")
+            .distinct("sessionYear", {
+              status: { $regex: /^approved$/i },
+              activity: { $regex: /^active$/i },
+            }),
+          routinesCollection.distinct("gregorianYear"),
+        ]);
+        [...studentSessionYears, ...routineYears].forEach((rawY) => {
+          const y = normalizeYearBn(rawY);
+          if (y) yearSet.add(y);
+        });
+      } catch (yrErr) {
+        console.warn("Could not fetch academic years for seat plan:", yrErr);
+      }
+
+      if (requestedYearBn) {
+        yearSet.add(requestedYearBn);
+      }
+
+      const years = Array.from(yearSet).sort(
+        (a, b) => Number(bnToEn(b)) - Number(bnToEn(a))
+      );
+      const academicYear = requestedYearBn || routineYearBn || years[0] || "২০২৬";
+      if (!years.includes(academicYear)) {
+        years.unshift(academicYear);
+      }
+
+      const students = requestedYearBn
+        ? allHallStudents.filter(
+            (s) => normalizeYearBn(s.sessionYear) === requestedYearBn
+          )
+        : allHallStudents;
 
       const data = students
         .map((student) => {
@@ -319,6 +443,8 @@ function examRoutes(collections, helpers, database) {
       res.status(200).json({
         success: true,
         data,
+        academicYear,
+        years,
       });
     } catch (error) {
       console.error("Fetch Seat Plan Error:", error);
