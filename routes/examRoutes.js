@@ -305,26 +305,32 @@ function examRoutes(collections, helpers, database) {
           ? normalizeYearBn(requestedYearParam)
           : "";
 
-      const cleanHall = extractDigits(hallNo);
-      const bnHall = enToBn(cleanHall);
+      const isAllHalls = String(hallNo).trim().toLowerCase() === "all";
+      const cleanHall = isAllHalls ? "" : extractDigits(hallNo);
+      const bnHall = isAllHalls ? "" : enToBn(cleanHall);
 
       // ১. Students কালেকশন থেকে সক্রিয় ও অনুমোদিত শিক্ষার্থীদের ডাটা ফেচ করা
+      const studentQuery = {
+        status: { $regex: /^approved$/i },
+        activity: { $regex: /^active$/i },
+      };
+
+      if (!isAllHalls) {
+        studentQuery.$or = [
+          { hallNo: cleanHall },
+          { hallNo: Number(cleanHall) },
+          { hallNo: bnHall },
+          { hallNo: { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
+          { "seatPlan.hallNo": cleanHall },
+          { "seatPlan.hallNo": Number(cleanHall) },
+          { "seatPlan.hallNo": bnHall },
+          { "seatPlan.hallNo": { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
+        ];
+      }
+
       const allHallStudents = await database
         .collection("students")
-        .find({
-          status: { $regex: /^approved$/i },
-          activity: { $regex: /^active$/i },
-          $or: [
-            { hallNo: cleanHall },
-            { hallNo: Number(cleanHall) },
-            { hallNo: bnHall },
-            { hallNo: { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
-            { "seatPlan.hallNo": cleanHall },
-            { "seatPlan.hallNo": Number(cleanHall) },
-            { "seatPlan.hallNo": bnHall },
-            { "seatPlan.hallNo": { $regex: new RegExp(`(হল|hall)?\\s*[-—]?\\s*(${cleanHall}|${bnHall})`, "i") } },
-          ],
-        })
+        .find(studentQuery)
         .toArray();
 
       // শিক্ষাবর্ষের তালিকা ও সক্রিয় শিক্ষাবর্ষ নির্ধারণ (রুটিন + শিক্ষার্থী থেকে)
@@ -399,6 +405,12 @@ function examRoutes(collections, helpers, database) {
           }
 
           const currentSeatPlan = student.seatPlan || {};
+          const rawStudentHall = student.hallNo || currentSeatPlan.hallNo || "";
+          const studentHallDigits = extractDigits(rawStudentHall);
+          const actualHallNo = isAllHalls
+            ? parseInt(studentHallDigits, 10) || 0
+            : Number(cleanHall) || 1;
+
           const rawSeatNo = student.seatNo || currentSeatPlan.seatNo || "";
           const seatDigits = extractDigits(rawSeatNo);
           const actualSeatNo = parseInt(seatDigits, 10) || 0;
@@ -408,7 +420,7 @@ function examRoutes(collections, helpers, database) {
 
           return {
             _id: student._id.toString(),
-            hallNo: Number(cleanHall) || 1,
+            hallNo: actualHallNo,
             seatNo: actualSeatNo,
             benchNo: benchDigits ? Number(benchDigits) : (actualSeatNo > 0 ? Math.ceil(actualSeatNo / 2) : ""),
             class: classVal,
@@ -424,6 +436,7 @@ function examRoutes(collections, helpers, database) {
               student.officeUse?.rollNumber ||
               student.studentId ||
               "",
+            sessionYear: normalizeYearBn(student.sessionYear) || "",
             studentImage:
               student.studentImage ||
               student.profilePhoto ||
@@ -435,8 +448,20 @@ function examRoutes(collections, helpers, database) {
             semester: semester || "২য় সাময়িক পরীক্ষা",
           };
         })
-        .filter((s) => s.seatNo > 0)
-        .sort((a, b) => a.seatNo - b.seatNo);
+        .filter((s) => (isAllHalls ? true : s.seatNo > 0))
+        .sort((a, b) => {
+          if (isAllHalls) {
+            const aAssigned = a.hallNo > 0 && a.seatNo > 0 ? 0 : 1;
+            const bAssigned = b.hallNo > 0 && b.seatNo > 0 ? 0 : 1;
+            if (aAssigned !== bAssigned) return aAssigned - bAssigned;
+            if (a.hallNo !== b.hallNo) return a.hallNo - b.hallNo;
+            if (a.seatNo !== b.seatNo) return a.seatNo - b.seatNo;
+            const rollA = parseInt(bnToEn(a.roll), 10) || Infinity;
+            const rollB = parseInt(bnToEn(b.roll), 10) || Infinity;
+            return rollA - rollB;
+          }
+          return a.seatNo - b.seatNo;
+        });
 
       console.log("MongoDB Search Results (data count):", data.length);
 
