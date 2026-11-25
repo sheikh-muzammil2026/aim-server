@@ -1,15 +1,17 @@
 const express = require("express");
 const { ObjectId } = require("mongodb");
+const { requireAdmin } = require("../middleware/authMiddleware");
 
-function galleryRoutes(collections) {
+function galleryRoutes(collections, authHelpers = {}) {
   const router = express.Router();
   const { galleryCollection } = collections;
+  const adminOnly = requireAdmin(authHelpers.getAuthUser || (async () => null));
 
   /**
-   * গ্যালারিতে ছবি/ভিডিও আপলোড করার API
+   * গ্যালারিতে ছবি/ভিডিও আপলোড করার API (শুধুমাত্র অ্যাডমিন)
    * Endpoint: POST /api/gallery
    */
-  router.post("/api/gallery", async (req, res) => {
+  router.post("/api/gallery", adminOnly, async (req, res) => {
     try {
       const newItem = req.body;
       newItem.createdAt = new Date();
@@ -49,10 +51,10 @@ function galleryRoutes(collections) {
   });
 
   /**
-   * গ্যালারি থেকে আইটেম মুছে ফেলার API
+   * গ্যালারি থেকে আইটেম মুছে ফেলার API (শুধুমাত্র অ্যাডমিন)
    * Endpoint: DELETE /api/gallery/:id
    */
-  router.delete("/api/gallery/:id", async (req, res) => {
+  router.delete("/api/gallery/:id", adminOnly, async (req, res) => {
     try {
       const id = req.params.id;
       if (!ObjectId.isValid(id)) {

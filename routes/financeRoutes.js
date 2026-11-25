@@ -1,8 +1,11 @@
 const express = require("express");
 const { ObjectId } = require("mongodb");
+const { requireAdmin } = require("../middleware/authMiddleware");
 
-function financeRoutes(collections) {
+function financeRoutes(collections, authHelpers = {}) {
   const router = express.Router();
+  const { getAuthUser, isAdminUser } = authHelpers;
+  const adminOnly = requireAdmin(getAuthUser || (async () => null));
   const {
     fundsCollection,
     financeIncomesCollection,
@@ -1232,10 +1235,10 @@ function financeRoutes(collections) {
   });
 
   /**
-   * ৪.৫. ট্রানজেকশন অনুমোদন করার API
+   * ৪.৫. ট্রানজেকশন অনুমোদন করার API (শুধুমাত্র অ্যাডমিন)
    * Endpoint: PUT /api/finance/approve
    */
-  router.put("/api/finance/approve", async (req, res) => {
+  router.put("/api/finance/approve", adminOnly, async (req, res) => {
     try {
       const { id, type } = req.body;
       if (!id || !type) {
@@ -1279,10 +1282,10 @@ function financeRoutes(collections) {
   });
 
   /**
-   * ৪.৬ ট্রানজেকশন ডিলিট করার API
+   * ৪.৬ ট্রানজেকশন ডিলিট করার API (শুধুমাত্র অ্যাডমিন)
    * Endpoint: DELETE /api/finance/delete
    */
-  router.delete("/api/finance/delete", async (req, res) => {
+  router.delete("/api/finance/delete", adminOnly, async (req, res) => {
     try {
       const { id, type } = req.body;
       if (!id || !type) {
@@ -1334,6 +1337,26 @@ function financeRoutes(collections) {
         return res
           .status(400)
           .json({ success: false, message: "অকার্যকর আইডি।" });
+      }
+
+      const existingIncome = await financeIncomesCollection.findOne({
+        _id: new ObjectId(id),
+      });
+      if (!existingIncome) {
+        return res
+          .status(404)
+          .json({ success: false, message: "আয়ের তথ্য পাওয়া যায়নি।" });
+      }
+
+      if (existingIncome.status === "pending") {
+        const authUser = getAuthUser ? await getAuthUser(req) : null;
+        if (!isAdminUser || !isAdminUser(authUser)) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "পেন্ডিং ভাউচার/রসিদ এডিট করার অনুমতি শুধুমাত্র অ্যাডমিনদের রয়েছে।",
+          });
+        }
       }
 
       const {
@@ -1427,6 +1450,26 @@ function financeRoutes(collections) {
         return res
           .status(400)
           .json({ success: false, message: "অকার্যকর আইডি।" });
+      }
+
+      const existingExpense = await financeExpensesCollection.findOne({
+        _id: new ObjectId(id),
+      });
+      if (!existingExpense) {
+        return res
+          .status(404)
+          .json({ success: false, message: "ব্যয়ের তথ্য পাওয়া যায়নি।" });
+      }
+
+      if (existingExpense.status === "pending") {
+        const authUser = getAuthUser ? await getAuthUser(req) : null;
+        if (!isAdminUser || !isAdminUser(authUser)) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "পেন্ডিং ভাউচার এডিট করার অনুমতি শুধুমাত্র অ্যাডমিনদের রয়েছে।",
+          });
+        }
       }
 
       const {
