@@ -235,12 +235,18 @@ function studentRoutes(collections, helpers) {
   router.patch("/api/students/:id/seat-plan", async (req, res) => {
     try {
       const { id } = req.params;
-      const { hallNo, benchNo, seatNo } = req.body;
+      const { hallNo, benchNo, seatNo, academicYear, examName, year, semester, sessionYear } = req.body;
 
       const bnToEn = (str) => {
         if (!str && str !== 0) return "";
         const bnDigits = { "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9" };
         return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
+      };
+
+      const enToBn = (str) => {
+        if (!str && str !== 0) return "";
+        const enDigits = { "0": "০", "1": "১", "2": "২", "3": "৩", "4": "৪", "5": "৫", "6": "৬", "7": "৭", "8": "৮", "9": "৯" };
+        return String(str).replace(/[0-9]/g, (d) => enDigits[d] || d);
       };
 
       const extractDigits = (val) => {
@@ -250,15 +256,144 @@ function studentRoutes(collections, helpers) {
         return match ? match[0] : String(val).trim();
       };
 
+      const getStudentClassName = (student) => {
+        if (!student) return "N/A";
+        if (student.divisionPreHifz?.active && student.divisionPreHifz.class) {
+          return student.divisionPreHifz.class;
+        }
+        if (student.divisionHifz?.active && student.divisionHifz.class) {
+          return student.divisionHifz.class;
+        }
+        if (student.divisionAcademy?.active && student.divisionAcademy.class) {
+          return student.divisionAcademy.class;
+        }
+        return student.officeUse?.recommendedClass || student.class || "N/A";
+      };
+
+      const getStudentDisplayName = (student) => {
+        if (!student) return "শিক্ষার্থী";
+        return (
+          student.studentNameBangla ||
+          student.studentNameEnglish ||
+          student.name ||
+          "শিক্ষার্থী"
+        );
+      };
+
+      const getStudentRoll = (student) => {
+        if (!student) return "N/A";
+        return (
+          student.roll ||
+          student.officeUse?.rollNumber ||
+          student.studentId ||
+          "N/A"
+        );
+      };
+
       const cleanHallNo = extractDigits(hallNo);
       const cleanBenchNo = extractDigits(benchNo);
       const cleanSeatNo = extractDigits(seatNo);
 
       let filter;
+      let currentObjectId = null;
       try {
-        filter = { _id: new ObjectId(id) };
+        currentObjectId = new ObjectId(id);
+        filter = { _id: currentObjectId };
       } catch (e) {
         filter = { studentId: String(id) };
+      }
+
+      const currentStudent = await studentsCollection.findOne(filter);
+      if (!currentStudent) {
+        return res.status(404).json({
+          success: false,
+          message: "শিক্ষার্থী পাওয়া যায়নি।",
+        });
+      }
+      if (currentStudent._id) {
+        currentObjectId = currentStudent._id;
+      }
+
+      const rawAcademicYear = academicYear || year || sessionYear || currentStudent.academicYear || currentStudent.sessionYear || "";
+      const cleanYear = extractDigits(rawAcademicYear);
+      const bnYear = enToBn(cleanYear);
+      const cleanExamName = String(examName || semester || currentStudent.seatPlan?.examName || currentStudent.examName || "").trim();
+
+      // ডুপ্লিকেট সিট বুকিং প্রতিরোধ: { academicYear, examName, hallNo, seatNo }
+      if (cleanHallNo && cleanSeatNo) {
+        const bnHallNo = enToBn(cleanHallNo);
+        const bnSeatNo = enToBn(cleanSeatNo);
+
+        const conflictQuery = {
+          status: { $regex: /^approved$/i },
+          activity: { $regex: /^active$/i },
+          $and: [
+            {
+              $or: [
+                { hallNo: cleanHallNo },
+                { hallNo: Number(cleanHallNo) },
+                { hallNo: bnHallNo },
+                { hallNo: { $regex: new RegExp(`^(?:(হল|hall)\\s*(নং|no\\.?)?\\s*[-—]?)?\\s*(${cleanHallNo}|${bnHallNo})$`, "i") } },
+                { "seatPlan.hallNo": cleanHallNo },
+                { "seatPlan.hallNo": Number(cleanHallNo) },
+                { "seatPlan.hallNo": bnHallNo },
+                { "seatPlan.hallNo": { $regex: new RegExp(`^(?:(হল|hall)\\s*(নং|no\\.?)?\\s*[-—]?)?\\s*(${cleanHallNo}|${bnHallNo})$`, "i") } },
+              ],
+            },
+            {
+              $or: [
+                { seatNo: cleanSeatNo },
+                { seatNo: Number(cleanSeatNo) },
+                { seatNo: bnSeatNo },
+                { "seatPlan.seatNo": cleanSeatNo },
+                { "seatPlan.seatNo": Number(cleanSeatNo) },
+                { "seatPlan.seatNo": bnSeatNo },
+              ],
+            },
+          ],
+        };
+
+        // বর্তমান শিক্ষার্থীর নিজস্ব রেকর্ড বাদ দেয়া
+        const excludeConditions = [];
+        if (currentObjectId) {
+          excludeConditions.push({ _id: { $ne: currentObjectId } });
+        }
+        if (currentStudent.studentId) {
+          excludeConditions.push({ studentId: { $ne: String(currentStudent.studentId) } });
+        }
+        if (currentStudent.roll) {
+          excludeConditions.push({ roll: { $ne: String(currentStudent.roll) } });
+        }
+        if (excludeConditions.length > 0) {
+          conflictQuery.$and.push(...excludeConditions);
+        }
+
+        if (cleanYear) {
+          conflictQuery.$and.push({
+            $or: [
+              { sessionYear: cleanYear },
+              { sessionYear: bnYear },
+              { sessionYear: { $regex: new RegExp(cleanYear, "i") } },
+              { academicYear: cleanYear },
+              { academicYear: bnYear },
+              { "seatPlan.academicYear": cleanYear },
+              { "seatPlan.academicYear": bnYear },
+              { "seatPlan.sessionYear": cleanYear },
+              { "seatPlan.sessionYear": bnYear },
+            ],
+          });
+        }
+
+        const existingOccupant = await studentsCollection.findOne(conflictQuery);
+        if (existingOccupant) {
+          const occupantName = getStudentDisplayName(existingOccupant);
+          const occupantRoll = getStudentRoll(existingOccupant);
+          const occupantClass = getStudentClassName(existingOccupant);
+          return res.status(409).json({
+            success: false,
+            message: `Seat No ${cleanSeatNo} in Hall ${cleanHallNo} is already booked for ${occupantName} (Roll: ${occupantRoll}, Class: ${occupantClass}).`,
+          });
+        }
       }
 
       const updateDoc = {
@@ -266,21 +401,18 @@ function studentRoutes(collections, helpers) {
           "seatPlan.hallNo": cleanHallNo,
           "seatPlan.benchNo": cleanBenchNo,
           "seatPlan.seatNo": cleanSeatNo,
+          "seatPlan.academicYear": rawAcademicYear || cleanYear || "২০২৬",
+          "seatPlan.examName": cleanExamName,
           hallNo: cleanHallNo,
           benchNo: cleanBenchNo,
           seatNo: cleanSeatNo,
+          academicYear: rawAcademicYear || cleanYear || "২০২৬",
+          examName: cleanExamName,
           updatedAt: new Date(),
         },
       };
 
-      const result = await studentsCollection.updateOne(filter, updateDoc);
-
-      if (result.matchedCount === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "শিক্ষার্থী পাওয়া যায়নি।",
-        });
-      }
+      await studentsCollection.updateOne({ _id: currentStudent._id }, updateDoc);
 
       res.status(200).json({
         success: true,
@@ -289,6 +421,8 @@ function studentRoutes(collections, helpers) {
           hallNo: cleanHallNo,
           benchNo: cleanBenchNo,
           seatNo: cleanSeatNo,
+          academicYear: rawAcademicYear || cleanYear || "২০২৬",
+          examName: cleanExamName,
         },
       });
     } catch (error) {
@@ -306,7 +440,7 @@ function studentRoutes(collections, helpers) {
    */
   router.post("/api/students/bulk-seat-plan", async (req, res) => {
     try {
-      const { updates } = req.body;
+      const { updates, academicYear, examName } = req.body;
       if (!Array.isArray(updates) || updates.length === 0) {
         return res.status(400).json({ success: false, message: "No updates provided" });
       }
@@ -317,12 +451,161 @@ function studentRoutes(collections, helpers) {
         return String(str).replace(/[০-৯]/g, (d) => bnDigits[d] || d);
       };
 
+      const enToBn = (str) => {
+        if (!str && str !== 0) return "";
+        const enDigits = { "0": "০", "1": "১", "2": "২", "3": "৩", "4": "৪", "5": "৫", "6": "৬", "7": "৭", "8": "৮", "9": "৯" };
+        return String(str).replace(/[0-9]/g, (d) => enDigits[d] || d);
+      };
+
       const extractDigits = (val) => {
         if (!val && val !== 0) return "";
         const enStr = bnToEn(val);
         const match = enStr.match(/\d+/);
         return match ? match[0] : String(val).trim();
       };
+
+      const getStudentClassName = (student) => {
+        if (!student) return "N/A";
+        if (student.divisionPreHifz?.active && student.divisionPreHifz.class) {
+          return student.divisionPreHifz.class;
+        }
+        if (student.divisionHifz?.active && student.divisionHifz.class) {
+          return student.divisionHifz.class;
+        }
+        if (student.divisionAcademy?.active && student.divisionAcademy.class) {
+          return student.divisionAcademy.class;
+        }
+        return student.officeUse?.recommendedClass || student.class || "N/A";
+      };
+
+      const getStudentDisplayName = (student) => {
+        if (!student) return "শিক্ষার্থী";
+        return (
+          student.studentNameBangla ||
+          student.studentNameEnglish ||
+          student.name ||
+          "শিক্ষার্থী"
+        );
+      };
+
+      const getStudentRoll = (student) => {
+        if (!student) return "N/A";
+        return (
+          student.roll ||
+          student.officeUse?.rollNumber ||
+          student.studentId ||
+          "N/A"
+        );
+      };
+
+      // ব্যাচের ভেতরে কোনো অভ্যন্তরীণ সিট ডুপ্লিকেশন আছে কিনা তা পরীক্ষা
+      const batchSeen = new Map();
+      for (const u of updates) {
+        const cleanHallNo = extractDigits(u.hallNo);
+        const cleanSeatNo = extractDigits(u.seatNo);
+        if (cleanHallNo && cleanSeatNo) {
+          const key = `${cleanHallNo}-${cleanSeatNo}`;
+          if (batchSeen.has(key)) {
+            const prev = batchSeen.get(key);
+            if (String(prev.id) !== String(u.id)) {
+              return res.status(409).json({
+                success: false,
+                message: `Seat No ${cleanSeatNo} in Hall ${cleanHallNo} is already assigned multiple times in this batch.`,
+              });
+            }
+          }
+          batchSeen.set(key, u);
+        }
+      }
+
+      // প্রতিটি আপডেটের জন্য ডাটাবেজে কনফ্লিক্ট চেক
+      for (const u of updates) {
+        const cleanHallNo = extractDigits(u.hallNo);
+        const cleanSeatNo = extractDigits(u.seatNo);
+
+        if (cleanHallNo && cleanSeatNo) {
+          let studentFilter;
+          let currentObjectId = null;
+          try {
+            currentObjectId = new ObjectId(u.id);
+            studentFilter = { _id: currentObjectId };
+          } catch (e) {
+            studentFilter = { studentId: String(u.id) };
+          }
+
+          const currentStudent = await studentsCollection.findOne(studentFilter);
+          if (currentStudent?._id) currentObjectId = currentStudent._id;
+
+          const rawYear = u.academicYear || academicYear || u.sessionYear || currentStudent?.academicYear || currentStudent?.sessionYear || "";
+          const cleanYear = extractDigits(rawYear);
+          const bnYear = enToBn(cleanYear);
+          const cleanExam = String(u.examName || examName || currentStudent?.seatPlan?.examName || currentStudent?.examName || "").trim();
+          const bnHallNo = enToBn(cleanHallNo);
+          const bnSeatNo = enToBn(cleanSeatNo);
+
+          const conflictQuery = {
+            status: { $regex: /^approved$/i },
+            activity: { $regex: /^active$/i },
+            $and: [
+              {
+                $or: [
+                  { hallNo: cleanHallNo },
+                  { hallNo: Number(cleanHallNo) },
+                  { hallNo: bnHallNo },
+                  { hallNo: { $regex: new RegExp(`^(?:(হল|hall)\\s*(নং|no\\.?)?\\s*[-—]?)?\\s*(${cleanHallNo}|${bnHallNo})$`, "i") } },
+                  { "seatPlan.hallNo": cleanHallNo },
+                  { "seatPlan.hallNo": Number(cleanHallNo) },
+                  { "seatPlan.hallNo": bnHallNo },
+                  { "seatPlan.hallNo": { $regex: new RegExp(`^(?:(হল|hall)\\s*(নং|no\\.?)?\\s*[-—]?)?\\s*(${cleanHallNo}|${bnHallNo})$`, "i") } },
+                ],
+              },
+              {
+                $or: [
+                  { seatNo: cleanSeatNo },
+                  { seatNo: Number(cleanSeatNo) },
+                  { seatNo: bnSeatNo },
+                  { "seatPlan.seatNo": cleanSeatNo },
+                  { "seatPlan.seatNo": Number(cleanSeatNo) },
+                  { "seatPlan.seatNo": bnSeatNo },
+                ],
+              },
+            ],
+          };
+
+          const exclude = [];
+          if (currentObjectId) exclude.push({ _id: { $ne: currentObjectId } });
+          if (currentStudent?.studentId) exclude.push({ studentId: { $ne: String(currentStudent.studentId) } });
+          if (currentStudent?.roll) exclude.push({ roll: { $ne: String(currentStudent.roll) } });
+          if (exclude.length > 0) conflictQuery.$and.push(...exclude);
+
+          if (cleanYear) {
+            conflictQuery.$and.push({
+              $or: [
+                { sessionYear: cleanYear },
+                { sessionYear: bnYear },
+                { sessionYear: { $regex: new RegExp(cleanYear, "i") } },
+                { academicYear: cleanYear },
+                { academicYear: bnYear },
+                { "seatPlan.academicYear": cleanYear },
+                { "seatPlan.academicYear": bnYear },
+                { "seatPlan.sessionYear": cleanYear },
+                { "seatPlan.sessionYear": bnYear },
+              ],
+            });
+          }
+
+          const existingOccupant = await studentsCollection.findOne(conflictQuery);
+          if (existingOccupant) {
+            const occupantName = getStudentDisplayName(existingOccupant);
+            const occupantRoll = getStudentRoll(existingOccupant);
+            const occupantClass = getStudentClassName(existingOccupant);
+            return res.status(409).json({
+              success: false,
+              message: `Seat No ${cleanSeatNo} in Hall ${cleanHallNo} is already booked for ${occupantName} (Roll: ${occupantRoll}, Class: ${occupantClass}).`,
+            });
+          }
+        }
+      }
 
       const bulkOps = updates.map((u) => {
         let filter;
@@ -335,6 +618,8 @@ function studentRoutes(collections, helpers) {
         const cleanHallNo = extractDigits(u.hallNo);
         const cleanBenchNo = extractDigits(u.benchNo);
         const cleanSeatNo = extractDigits(u.seatNo);
+        const rawYear = u.academicYear || academicYear || u.sessionYear || "";
+        const cleanExam = String(u.examName || examName || "").trim();
 
         return {
           updateOne: {
@@ -344,9 +629,13 @@ function studentRoutes(collections, helpers) {
                 "seatPlan.hallNo": cleanHallNo,
                 "seatPlan.benchNo": cleanBenchNo,
                 "seatPlan.seatNo": cleanSeatNo,
+                "seatPlan.academicYear": rawYear || "২০২৬",
+                "seatPlan.examName": cleanExam,
                 hallNo: cleanHallNo,
                 benchNo: cleanBenchNo,
                 seatNo: cleanSeatNo,
+                academicYear: rawYear || "২০২৬",
+                examName: cleanExam,
                 updatedAt: new Date(),
               },
             },
